@@ -1,0 +1,6 @@
+{
+  "name": "GeoNexo",
+  "description": "Plataforma colaborativa para equipos de oficina y campo con chat en tiempo real, documentos colaborativos y mapas compartidos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

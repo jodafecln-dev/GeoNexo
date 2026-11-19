@@ -1,0 +1,178 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user preferences, accessibility modes, and location opt-in settings.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "roleTitle": { "type": "string" },
+        "highContrastMode": { "type": "boolean" },
+        "darkMode": { "type": "boolean" },
+        "locationSharingEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "roleTitle",
+        "highContrastMode",
+        "darkMode",
+        "locationSharingEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Channel": {
+      "title": "Channel",
+      "description": "Operational team channel anchoring real-time chat, shared map, and collaborative document.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "name": { "type": "string" },
+        "topic": { "type": "string" },
+        "channelType": { "type": "string", "enum": ["FIELD", "PROJECT", "LOGISTICS", "GENERAL"] },
+        "pinnedDocTitle": { "type": "string" },
+        "pinnedDocBody": { "type": "string" },
+        "pinnedDocUpdatedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": [
+        "ownerId",
+        "memberUids",
+        "name",
+        "topic",
+        "channelType",
+        "pinnedDocTitle",
+        "pinnedDocBody",
+        "pinnedDocUpdatedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChannelMessage": {
+      "title": "ChannelMessage",
+      "description": "Real-time message or thread reply inside a channel, optionally linked to a GeoMarker or photo.",
+      "type": "object",
+      "properties": {
+        "channelId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "body": { "type": "string" },
+        "parentMessageId": { "type": "string" },
+        "linkedMarkerId": { "type": "string" },
+        "linkedMarkerTitle": { "type": "string" },
+        "attachmentLabel": { "type": "string" },
+        "attachmentUri": { "type": "string" },
+        "messageType": { "type": "string", "enum": ["TEXT", "GEO_PIN", "PHOTO", "SYSTEM"] },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": [
+        "channelId",
+        "senderId",
+        "senderName",
+        "memberUids",
+        "body",
+        "messageType",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GeoMarker": {
+      "title": "GeoMarker",
+      "description": "Shared map marker, checkpoint, incident, or route note anchored to a channel.",
+      "type": "object",
+      "properties": {
+        "channelId": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "updatedByName": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "title": { "type": "string" },
+        "notes": { "type": "string" },
+        "category": { "type": "string", "enum": ["INCIDENT", "PROGRESS", "CHECKPOINT", "DELIVERY", "ROUTE"] },
+        "status": { "type": "string", "enum": ["OPEN", "IN_PROGRESS", "RESOLVED"] },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "mapX": { "type": "number" },
+        "mapY": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": [
+        "channelId",
+        "creatorId",
+        "updatedByName",
+        "memberUids",
+        "title",
+        "notes",
+        "category",
+        "status",
+        "lat",
+        "lng",
+        "mapX",
+        "mapY",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChannelPresence": {
+      "title": "ChannelPresence",
+      "description": "Opt-in live field location status for a channel member without PII.",
+      "type": "object",
+      "properties": {
+        "channelId": { "type": "string" },
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "memberUids": { "type": "array" },
+        "sharingActive": { "type": "boolean" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "mapX": { "type": "number" },
+        "mapY": { "type": "number" },
+        "accuracyMeters": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": [
+        "channelId",
+        "userId",
+        "displayName",
+        "memberUids",
+        "sharingActive",
+        "lat",
+        "lng",
+        "mapX",
+        "mapY",
+        "accuracyMeters",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User preferences and private settings scoped by UID."
+    },
+    "/channels/{channelId}": {
+      "schema": { "$ref": "#/entities/Channel" },
+      "description": "Team channels with pinned collaborative document."
+    },
+    "/channels/{channelId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChannelMessage" },
+      "description": "Real-time channel messages and threads."
+    },
+    "/channels/{channelId}/markers/{markerId}": {
+      "schema": { "$ref": "#/entities/GeoMarker" },
+      "description": "Shared geospatial markers and notes per channel."
+    },
+    "/channels/{channelId}/presence/{userId}": {
+      "schema": { "$ref": "#/entities/ChannelPresence" },
+      "description": "Opt-in live location pins for channel members."
+    }
+  }
+}

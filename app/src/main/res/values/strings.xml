@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">GeoNexo</string>
+    <string name="auth_subtitle">Colaboración geoespacial, chat y documentos en un solo lugar para equipos de oficina y campo.</string>
+    <string name="sign_in_google">Continuar con Google</string>
+    <string name="error_missing_client_id">Falta la configuración de Google Sign-In.</string>
+    <string name="error_unexpected_credential">Tipo de credencial inesperado.</string>
+    <string name="location_consent_title">Compartir ubicación en tiempo real</string>
+    <string name="location_consent_body">Tu posición solo es visible dentro de tus canales activos mientras mantengas el interruptor encendido. Puedes pausarla con un toque en cualquier momento.</string>
+</resources>

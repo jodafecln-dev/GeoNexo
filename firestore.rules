@@ -1,0 +1,246 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidMemberList(listVal) {
+      return listVal is list && listVal.size() >= 1 && listVal.size() <= 50 && listVal[0] is string;
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+             data.roleTitle is string && data.roleTitle.size() >= 1 && data.roleTitle.size() <= 50 &&
+             data.highContrastMode is bool &&
+             data.darkMode is bool &&
+             data.locationSharingEnabled is bool &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidChannel(data) {
+      return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
+             isValidMemberList(data.memberUids) &&
+             data.name is string && data.name.size() >= 2 && data.name.size() <= 60 &&
+             data.topic is string && data.topic.size() <= 160 &&
+             data.channelType in ['FIELD', 'PROJECT', 'LOGISTICS', 'GENERAL'] &&
+             data.pinnedDocTitle is string && data.pinnedDocTitle.size() >= 1 && data.pinnedDocTitle.size() <= 100 &&
+             data.pinnedDocBody is string && data.pinnedDocBody.size() <= 12000 &&
+             data.pinnedDocUpdatedBy is string && data.pinnedDocUpdatedBy.size() >= 1 && data.pinnedDocUpdatedBy.size() <= 60 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidMessage(data, channelId) {
+      return data.channelId == channelId &&
+             data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 60 &&
+             isValidMemberList(data.memberUids) &&
+             data.body is string && data.body.size() >= 1 && data.body.size() <= 2000 &&
+             data.messageType in ['TEXT', 'GEO_PIN', 'PHOTO', 'SYSTEM'] &&
+             (!('parentMessageId' in data) || (data.parentMessageId is string && isValidId(data.parentMessageId))) &&
+             (!('linkedMarkerId' in data) || (data.linkedMarkerId is string && isValidId(data.linkedMarkerId))) &&
+             (!('linkedMarkerTitle' in data) || (data.linkedMarkerTitle is string && data.linkedMarkerTitle.size() >= 1 && data.linkedMarkerTitle.size() <= 80)) &&
+             (!('attachmentLabel' in data) || (data.attachmentLabel is string && data.attachmentLabel.size() >= 1 && data.attachmentLabel.size() <= 120)) &&
+             (!('attachmentUri' in data) || (data.attachmentUri is string && data.attachmentUri.size() >= 1 && data.attachmentUri.size() <= 500)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidMarker(data, channelId) {
+      return data.channelId == channelId &&
+             data.creatorId is string && data.creatorId.size() >= 1 && data.creatorId.size() <= 128 &&
+             data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 60 &&
+             isValidMemberList(data.memberUids) &&
+             data.title is string && data.title.size() >= 2 && data.title.size() <= 80 &&
+             data.notes is string && data.notes.size() <= 1000 &&
+             data.category in ['INCIDENT', 'PROGRESS', 'CHECKPOINT', 'DELIVERY', 'ROUTE'] &&
+             data.status in ['OPEN', 'IN_PROGRESS', 'RESOLVED'] &&
+             data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+             data.lng is number && data.lng >= -180 && data.lng <= 180 &&
+             data.mapX is number && data.mapX >= 0 && data.mapX <= 1 &&
+             data.mapY is number && data.mapY >= 0 && data.mapY <= 1 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPresence(data, channelId, userId) {
+      return data.channelId == channelId &&
+             data.userId == userId &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+             isValidMemberList(data.memberUids) &&
+             data.sharingActive is bool &&
+             data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+             data.lng is number && data.lng >= -180 && data.lng <= 180 &&
+             data.mapX is number && data.mapX >= 0 && data.mapX <= 1 &&
+             data.mapY is number && data.mapY >= 0 && data.mapY <= 1 &&
+             data.accuracyMeters is number && data.accuracyMeters >= 0 && data.accuracyMeters <= 5000 &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    // 1. User Preferences (strictly owner-scoped, zero cross-user PII exposure)
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'roleTitle', 'highContrastMode', 'darkMode', 'locationSharingEnabled', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'roleTitle', 'highContrastMode', 'darkMode', 'locationSharingEnabled', 'createdAt', 'updatedAt']);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'roleTitle', 'highContrastMode', 'darkMode', 'locationSharingEnabled', 'updatedAt']);
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+    }
+
+    // 2. Operational Channels + Pinned Collaborative Doc
+    match /channels/{channelId} {
+      allow get: if isSignedIn() && isValidId(channelId) && request.auth.uid in existing().memberUids;
+      allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+
+      allow create: if isSignedIn() &&
+                       isValidId(channelId) &&
+                       isValidChannel(incoming()) &&
+                       incoming().ownerId == request.auth.uid &&
+                       request.auth.uid in incoming().memberUids &&
+                       incoming().keys().hasAll(['ownerId', 'memberUids', 'name', 'topic', 'channelType', 'pinnedDocTitle', 'pinnedDocBody', 'pinnedDocUpdatedBy', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['ownerId', 'memberUids', 'name', 'topic', 'channelType', 'pinnedDocTitle', 'pinnedDocBody', 'pinnedDocUpdatedBy', 'createdAt', 'updatedAt']);
+
+      allow update: if isSignedIn() &&
+                       isValidId(channelId) &&
+                       isValidChannel(incoming()) &&
+                       request.auth.uid in existing().memberUids &&
+                       incoming().ownerId == existing().ownerId &&
+                       incoming().createdAt == existing().createdAt &&
+                       (
+                         (incoming().diff(existing()).affectedKeys().hasOnly(['pinnedDocTitle', 'pinnedDocBody', 'pinnedDocUpdatedBy', 'updatedAt']) &&
+                          incoming().memberUids == existing().memberUids) ||
+                         (existing().ownerId == request.auth.uid &&
+                          request.auth.uid in incoming().memberUids &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'topic', 'channelType', 'memberUids', 'updatedAt']))
+                       );
+
+      allow delete: if isSignedIn() && isValidId(channelId) && existing().ownerId == request.auth.uid;
+
+      // 3. Messages & Threads
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(messageId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+
+        allow create: if isSignedIn() &&
+                         isValidId(channelId) &&
+                         isValidId(messageId) &&
+                         isValidMessage(incoming(), channelId) &&
+                         incoming().senderId == request.auth.uid &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['channelId', 'senderId', 'senderName', 'memberUids', 'body', 'messageType', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['channelId', 'senderId', 'senderName', 'memberUids', 'body', 'parentMessageId', 'linkedMarkerId', 'linkedMarkerTitle', 'attachmentLabel', 'attachmentUri', 'messageType', 'createdAt', 'updatedAt']) &&
+                         exists(/databases/$(database)/documents/channels/$(channelId)) &&
+                         request.auth.uid in get(/databases/$(database)/documents/channels/$(channelId)).data.memberUids;
+
+        allow update: if isSignedIn() &&
+                         isValidId(channelId) &&
+                         isValidId(messageId) &&
+                         isValidMessage(incoming(), channelId) &&
+                         existing().senderId == request.auth.uid &&
+                         incoming().senderId == existing().senderId &&
+                         incoming().channelId == existing().channelId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['body', 'updatedAt']);
+
+        allow delete: if isSignedIn() && isValidId(channelId) && isValidId(messageId) && existing().senderId == request.auth.uid;
+      }
+
+      // 4. Shared GeoMarkers & Point Notes
+      match /markers/{markerId} {
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(markerId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+
+        allow create: if isSignedIn() &&
+                         isValidId(channelId) &&
+                         isValidId(markerId) &&
+                         isValidMarker(incoming(), channelId) &&
+                         incoming().creatorId == request.auth.uid &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['channelId', 'creatorId', 'updatedByName', 'memberUids', 'title', 'notes', 'category', 'status', 'lat', 'lng', 'mapX', 'mapY', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['channelId', 'creatorId', 'updatedByName', 'memberUids', 'title', 'notes', 'category', 'status', 'lat', 'lng', 'mapX', 'mapY', 'createdAt', 'updatedAt']) &&
+                         exists(/databases/$(database)/documents/channels/$(channelId)) &&
+                         request.auth.uid in get(/databases/$(database)/documents/channels/$(channelId)).data.memberUids;
+
+        allow update: if isSignedIn() &&
+                         isValidId(channelId) &&
+                         isValidId(markerId) &&
+                         isValidMarker(incoming(), channelId) &&
+                         request.auth.uid in existing().memberUids &&
+                         incoming().creatorId == existing().creatorId &&
+                         incoming().channelId == existing().channelId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'notes', 'category', 'status', 'lat', 'lng', 'mapX', 'mapY', 'updatedByName', 'updatedAt']);
+
+        allow delete: if isSignedIn() && isValidId(channelId) && isValidId(markerId) &&
+                         (existing().creatorId == request.auth.uid ||
+                          get(/databases/$(database)/documents/channels/$(channelId)).data.ownerId == request.auth.uid);
+      }
+
+      // 5. Opt-in Live Location Presence (no PII)
+      match /presence/{userId} {
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(userId) && request.auth.uid in existing().memberUids;
+        allow list: if isSignedIn() && request.auth.uid in resource.data.memberUids;
+
+        allow create: if isOwner(userId) &&
+                         isValidId(channelId) &&
+                         isValidId(userId) &&
+                         isValidPresence(incoming(), channelId, userId) &&
+                         request.auth.uid in incoming().memberUids &&
+                         incoming().keys().hasAll(['channelId', 'userId', 'displayName', 'memberUids', 'sharingActive', 'lat', 'lng', 'mapX', 'mapY', 'accuracyMeters', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['channelId', 'userId', 'displayName', 'memberUids', 'sharingActive', 'lat', 'lng', 'mapX', 'mapY', 'accuracyMeters', 'updatedAt']) &&
+                         exists(/databases/$(database)/documents/channels/$(channelId)) &&
+                         request.auth.uid in get(/databases/$(database)/documents/channels/$(channelId)).data.memberUids;
+
+        allow update: if isOwner(userId) &&
+                         isValidId(channelId) &&
+                         isValidId(userId) &&
+                         isValidPresence(incoming(), channelId, userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().channelId == existing().channelId &&
+                         incoming().memberUids == existing().memberUids &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'sharingActive', 'lat', 'lng', 'mapX', 'mapY', 'accuracyMeters', 'updatedAt']);
+
+        allow delete: if isOwner(userId) && isValidId(channelId) && isValidId(userId);
+      }
+    }
+  }
+}
