@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,8 +20,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
@@ -34,6 +38,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,11 +49,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.model.Channel
 import com.example.data.model.GeoMarker
+import com.example.ui.theme.GeoAiGradientEnd
+import com.example.ui.theme.GeoAiGradientStart
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -58,6 +67,7 @@ fun CollaborativeDocScreen(
   onSaveDoc: (title: String, body: String) -> Unit,
   onOpenMarkerOnMap: (String) -> Unit,
   onShowFeedback: (String) -> Unit,
+  onAssistWithGemini: () -> Unit,
 ) {
   if (channel == null) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -87,8 +97,8 @@ fun CollaborativeDocScreen(
   ) {
     Surface(
       shape = MaterialTheme.shapes.medium,
-      color = MaterialTheme.colorScheme.surface,
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+      color = MaterialTheme.colorScheme.surfaceContainerLowest,
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
       modifier = Modifier.fillMaxWidth(),
     ) {
       Row(
@@ -97,19 +107,28 @@ fun CollaborativeDocScreen(
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-          Icon(
-            imageVector = Icons.Filled.Description,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-          )
-          Spacer(Modifier.width(10.dp))
+          Box(
+            modifier =
+              Modifier.size(40.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Description,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.onPrimaryContainer,
+              modifier = Modifier.size(20.dp),
+            )
+          }
+          Spacer(Modifier.width(12.dp))
           Column {
             Text(
-              text = "Documento anclado a #${channel.name}",
+              text = "Bitácora · #${channel.name}",
               style = MaterialTheme.typography.titleSmall,
             )
             Text(
-              text = "Última edición por ${channel.pinnedDocUpdatedBy}",
+              text = "Editado por ${channel.pinnedDocUpdatedBy}",
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -139,12 +158,72 @@ fun CollaborativeDocScreen(
       }
     }
 
+    // Modern AI Assistant Gradient-Bordered Banner Button
+    Surface(
+      shape = MaterialTheme.shapes.medium,
+      color = MaterialTheme.colorScheme.surfaceContainerLow,
+      border =
+        BorderStroke(
+          1.2.dp,
+          Brush.horizontalGradient(listOf(GeoAiGradientStart, GeoAiGradientEnd)),
+        ),
+      modifier =
+        Modifier.fillMaxWidth()
+          .clickable(onClick = onAssistWithGemini)
+          .testTag("doc_assist_gemini_btn"),
+    ) {
+      Row(
+        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Box(
+          modifier =
+            Modifier.size(34.dp)
+              .clip(CircleShape)
+              .background(Brush.linearGradient(listOf(GeoAiGradientStart, GeoAiGradientEnd))),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            imageVector = Icons.Filled.AutoAwesome,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier.size(18.dp),
+          )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = "Completar o resumir bitácora con Gemini",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+          )
+          Text(
+            text = "Genera acuerdos y pendientes desde el mapa y chat",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        Icon(
+          imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+          contentDescription = null,
+          tint = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(18.dp),
+        )
+      }
+    }
+
     if (isEditing) {
       OutlinedTextField(
         value = titleDraft,
         onValueChange = { titleDraft = it },
         label = { Text("Título de la bitácora") },
         singleLine = true,
+        shape = MaterialTheme.shapes.medium,
+        colors =
+          OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+          ),
         modifier = Modifier.fillMaxWidth().testTag("doc_title_input"),
       )
 
@@ -153,6 +232,12 @@ fun CollaborativeDocScreen(
         onValueChange = { bodyDraft = it },
         label = { Text("Contenido colaborativo (notas, acuerdos, checklist)") },
         minLines = 8,
+        shape = MaterialTheme.shapes.medium,
+        colors =
+          OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+          ),
         modifier = Modifier.fillMaxWidth().testTag("doc_body_input"),
       )
 
@@ -189,7 +274,7 @@ fun CollaborativeDocScreen(
             bodyDraft = channel.pinnedDocBody
             isEditing = false
           },
-          modifier = Modifier.weight(1f),
+          modifier = Modifier.weight(1f).height(48.dp),
         ) {
           Text("Descartar")
         }
@@ -199,7 +284,7 @@ fun CollaborativeDocScreen(
             isEditing = false
           },
           enabled = titleDraft.trim().isNotEmpty(),
-          modifier = Modifier.weight(1f).testTag("save_doc_button"),
+          modifier = Modifier.weight(1f).height(48.dp).testTag("save_doc_button"),
         ) {
           Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(18.dp))
           Spacer(Modifier.width(6.dp))
@@ -209,8 +294,8 @@ fun CollaborativeDocScreen(
     } else {
       Surface(
         shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
+        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth(),
       ) {
         Column(
@@ -237,9 +322,9 @@ fun CollaborativeDocScreen(
         )
         markers.forEach { mk ->
           Surface(
-            shape = MaterialTheme.shapes.small,
-            color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceContainerLowest,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier =
               Modifier.fillMaxWidth()
                 .clickable { onOpenMarkerOnMap(mk.id) }
@@ -249,12 +334,21 @@ fun CollaborativeDocScreen(
               modifier = Modifier.padding(12.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
-              Icon(
-                imageVector = Icons.Filled.LocationOn,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-              )
-              Spacer(Modifier.width(10.dp))
+              Box(
+                modifier =
+                  Modifier.size(34.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                contentAlignment = Alignment.Center,
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.LocationOn,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                  modifier = Modifier.size(18.dp),
+                )
+              }
+              Spacer(Modifier.width(12.dp))
               Column(modifier = Modifier.weight(1f)) {
                 Text(mk.title, style = MaterialTheme.typography.titleSmall)
                 Text(
@@ -263,11 +357,17 @@ fun CollaborativeDocScreen(
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
               }
-              Text(
-                text = "Abrir mapa",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-              )
+              Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer,
+              ) {
+                Text(
+                  text = "Mapa",
+                  style = MaterialTheme.typography.labelLarge,
+                  color = MaterialTheme.colorScheme.onPrimaryContainer,
+                  modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+              }
             }
           }
         }

@@ -6,4 +6,6 @@
     <string name="error_unexpected_credential">Tipo de credencial inesperado.</string>
     <string name="location_consent_title">Compartir ubicación en tiempo real</string>
     <string name="location_consent_body">Tu posición solo es visible dentro de tus canales activos mientras mantengas el interruptor encendido. Puedes pausarla con un toque en cualquier momento.</string>
+    <string name="enter_demo_mode">Explorar en modo prueba (sin login)</string>
+    <string name="demo_mode_caption">Usa chat, mapa y bitácora localmente sin cuenta. Inicia sesión con Google solo si quieres usar Gemini IA o conectar con tu equipo a distancia.</string>
 </resources>

@@ -23,12 +23,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.LocationOn
@@ -40,6 +42,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -52,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -63,6 +67,8 @@ import com.example.data.model.ChannelMessage
 import com.example.data.model.GeoMarker
 import com.example.data.model.SyncedCollection
 import com.example.ui.state.UiState
+import com.example.ui.theme.GeoAiGradientEnd
+import com.example.ui.theme.GeoAiGradientStart
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -82,6 +88,7 @@ fun ChatScreen(
     attachmentLabel: String?,
     attachmentUri: String?,
   ) -> Unit,
+  onSummarizeWithGemini: () -> Unit,
 ) {
   if (channel == null) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -124,7 +131,74 @@ fun ChatScreen(
           Text(
             text = "Hilo de conversación",
             style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.weight(1f),
           )
+        }
+      }
+    } else {
+      Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+      ) {
+        Row(
+          modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+            Box(
+              modifier =
+                Modifier.size(28.dp)
+                  .clip(CircleShape)
+                  .background(MaterialTheme.colorScheme.primaryContainer),
+              contentAlignment = Alignment.Center,
+            ) {
+              Icon(
+                imageVector = Icons.Filled.LocationOn,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(15.dp),
+              )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+              text = "${markers.size} marcadores activos",
+              style = MaterialTheme.typography.labelLarge,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+          Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerLowest,
+            border =
+              BorderStroke(
+                1.dp,
+                Brush.horizontalGradient(listOf(GeoAiGradientStart, GeoAiGradientEnd)),
+              ),
+            modifier =
+              Modifier.clickable(onClick = onSummarizeWithGemini)
+                .testTag("chat_summarize_gemini_btn"),
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Icon(
+                imageVector = Icons.Filled.AutoAwesome,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(15.dp),
+              )
+              Spacer(Modifier.width(6.dp))
+              Text(
+                text = "Resumir IA",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+              )
+            }
+          }
         }
       }
     }
@@ -172,14 +246,22 @@ fun ChatScreen(
             Column(
               modifier = Modifier.align(Alignment.Center).padding(24.dp),
               horizontalAlignment = Alignment.CenterHorizontally,
-              verticalArrangement = Arrangement.spacedBy(8.dp),
+              verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-              Icon(
-                imageVector = Icons.Filled.PinDrop,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(44.dp),
-              )
+              Box(
+                modifier =
+                  Modifier.size(64.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.PinDrop,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                  modifier = Modifier.size(30.dp),
+                )
+              }
               Text(
                 text = "Sin mensajes aún en #${channel.name}",
                 style = MaterialTheme.typography.titleMedium,
@@ -193,8 +275,8 @@ fun ChatScreen(
           } else {
             LazyColumn(
               state = listState,
-              contentPadding = PaddingValues(16.dp),
-              verticalArrangement = Arrangement.spacedBy(10.dp),
+              contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+              verticalArrangement = Arrangement.spacedBy(12.dp),
               modifier = Modifier.fillMaxSize(),
             ) {
               items(visibleMessages, key = { it.id }) { msg ->
@@ -220,7 +302,7 @@ fun ChatScreen(
       Row(
         modifier =
           Modifier.fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -244,10 +326,10 @@ fun ChatScreen(
       }
     }
 
-    // Composer bar
+    // Modern Floating Pill Composer
     Surface(
-      tonalElevation = 4.dp,
-      color = MaterialTheme.colorScheme.surface,
+      color = MaterialTheme.colorScheme.surfaceContainerLowest,
+      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
       modifier = Modifier.fillMaxWidth(),
     ) {
       Row(
@@ -288,10 +370,18 @@ fun ChatScreen(
             )
           },
           maxLines = 3,
-          shape = RoundedCornerShape(20.dp),
+          shape = RoundedCornerShape(24.dp),
+          colors =
+            OutlinedTextFieldDefaults.colors(
+              focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+              unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+              unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+              focusedBorderColor = MaterialTheme.colorScheme.primary,
+            ),
           modifier = Modifier.weight(1f).testTag("chat_message_input"),
         )
         Spacer(Modifier.width(6.dp))
+        val canSend = draft.trim().isNotEmpty()
         IconButton(
           onClick = {
             val clean = draft.trim()
@@ -308,16 +398,28 @@ fun ChatScreen(
               selectedPhotoUri = null
             }
           },
-          enabled = draft.trim().isNotEmpty(),
-          modifier = Modifier.testTag("send_message_button"),
+          enabled = canSend,
+          modifier = Modifier.size(48.dp).testTag("send_message_button"),
         ) {
-          Icon(
-            imageVector = Icons.AutoMirrored.Filled.Send,
-            contentDescription = "Enviar mensaje",
-            tint =
-              if (draft.trim().isNotEmpty()) MaterialTheme.colorScheme.primary
-              else MaterialTheme.colorScheme.onSurfaceVariant,
-          )
+          Box(
+            modifier =
+              Modifier.size(40.dp)
+                .clip(CircleShape)
+                .background(
+                  if (canSend) MaterialTheme.colorScheme.primary
+                  else MaterialTheme.colorScheme.surfaceContainerHigh
+                ),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.AutoMirrored.Filled.Send,
+              contentDescription = "Enviar mensaje",
+              tint =
+                if (canSend) MaterialTheme.colorScheme.onPrimary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+              modifier = Modifier.size(18.dp),
+            )
+          }
         }
       }
     }
@@ -335,7 +437,7 @@ fun ChatScreen(
             items(markers, key = { it.id }) { mk ->
               Surface(
                 shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.surfaceVariant,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
                 modifier =
                   Modifier.fillMaxWidth().clickable {
                     selectedMarker = mk
@@ -384,22 +486,54 @@ private fun MessageBubbleCard(
 ) {
   val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
   val timeText = message.createdAt?.toDate()?.let { timeFormat.format(it) } ?: "Enviando..."
+  val bubbleShape =
+    RoundedCornerShape(
+      topStart = 18.dp,
+      topEnd = 18.dp,
+      bottomStart = if (isSelf) 18.dp else 4.dp,
+      bottomEnd = if (isSelf) 4.dp else 18.dp,
+    )
 
-  Column(
+  Row(
     modifier = Modifier.fillMaxWidth(),
-    horizontalAlignment = if (isSelf) Alignment.End else Alignment.Start,
+    horizontalArrangement = if (isSelf) Arrangement.End else Arrangement.Start,
+    verticalAlignment = Alignment.Bottom,
   ) {
+    if (!isSelf) {
+      val initial = message.senderName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "G"
+      Box(
+        modifier =
+          Modifier.size(32.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.secondaryContainer),
+        contentAlignment = Alignment.Center,
+      ) {
+        Text(
+          text = initial,
+          style = MaterialTheme.typography.labelLarge,
+          color = MaterialTheme.colorScheme.onSecondaryContainer,
+          fontWeight = FontWeight.Bold,
+        )
+      }
+      Spacer(Modifier.width(8.dp))
+    }
+
     Surface(
-      shape = MaterialTheme.shapes.medium,
+      shape = bubbleShape,
       color =
-        if (isSelf) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-        else MaterialTheme.colorScheme.surface,
-      border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
-      modifier = Modifier.fillMaxWidth(0.9f),
+        if (isSelf) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+        else MaterialTheme.colorScheme.surfaceContainerLowest,
+      border =
+        BorderStroke(
+          1.dp,
+          if (isSelf) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+          else MaterialTheme.colorScheme.outlineVariant,
+        ),
+      modifier = Modifier.fillMaxWidth(if (isSelf) 0.85f else 0.88f),
     ) {
       Column(
-        modifier = Modifier.padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.padding(13.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
       ) {
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -407,7 +541,7 @@ private fun MessageBubbleCard(
           verticalAlignment = Alignment.CenterVertically,
         ) {
           Text(
-            text = message.senderName,
+            text = if (isSelf) "Tú" else message.senderName,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary,
@@ -432,7 +566,7 @@ private fun MessageBubbleCard(
             contentScale = ContentScale.Crop,
             modifier =
               Modifier.fillMaxWidth()
-                .height(150.dp)
+                .height(160.dp)
                 .clip(MaterialTheme.shapes.small),
           )
         } else if (!message.attachmentLabel.isNullOrBlank()) {
@@ -445,52 +579,57 @@ private fun MessageBubbleCard(
 
         if (!message.linkedMarkerId.isNullOrBlank() && !message.linkedMarkerTitle.isNullOrBlank()) {
           Surface(
-            shape = MaterialTheme.shapes.small,
-            color = MaterialTheme.colorScheme.tertiaryContainer,
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.secondaryContainer,
             modifier =
               Modifier.clickable { onJumpToMarker(message.linkedMarkerId) }
                 .testTag("linked_marker_chip_${message.linkedMarkerId}"),
           ) {
             Row(
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
               Icon(
                 imageVector = Icons.Filled.LocationOn,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(15.dp),
               )
               Spacer(Modifier.width(6.dp))
               Text(
-                text = "Ver en mapa: ${message.linkedMarkerTitle}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                text = "Mapa · ${message.linkedMarkerTitle}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
               )
             }
           }
         }
 
         if (!inThreadMode) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
+          Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
             modifier =
               Modifier.clickable(onClick = onReplyInThread)
-                .padding(top = 2.dp)
                 .testTag("thread_reply_btn_${message.id}"),
           ) {
-            Icon(
-              imageVector = Icons.AutoMirrored.Filled.Reply,
-              contentDescription = null,
-              tint = MaterialTheme.colorScheme.primary,
-              modifier = Modifier.size(15.dp),
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-              text = if (repliesCount > 0) "$repliesCount respuestas en hilo" else "Responder en hilo",
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.primary,
-            )
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.Reply,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp),
+              )
+              Spacer(Modifier.width(5.dp))
+              Text(
+                text = if (repliesCount > 0) "$repliesCount respuestas" else "Responder en hilo",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+              )
+            }
           }
         }
       }

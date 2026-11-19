@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddLocationAlt
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -45,6 +47,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -66,7 +69,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -84,6 +89,8 @@ import com.example.data.model.MarkerCategory
 import com.example.data.model.MarkerStatus
 import com.example.data.model.SyncedCollection
 import com.example.ui.state.UiState
+import com.example.ui.theme.GeoMapTerrainDark
+import com.example.ui.theme.GeoMapTerrainLight
 import com.example.ui.theme.GeoRouteBlue
 import com.example.ui.theme.GeoStatusInProgress
 import com.example.ui.theme.GeoStatusOpen
@@ -117,6 +124,7 @@ fun SharedMapScreen(
   ) -> Unit,
   onDeleteMarker: (String) -> Unit,
   onDiscussMarkerInChat: (GeoMarker) -> Unit,
+  onAnalyzeMarkerWithGemini: (GeoMarker) -> Unit,
 ) {
   if (channel == null) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -163,9 +171,11 @@ fun SharedMapScreen(
       label = "pulse_scale",
     )
 
-  val surfaceTint = MaterialTheme.colorScheme.surface
-  val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
-  val contourColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+  val surfaceTint =
+    if (isSystemInDarkTheme()) GeoMapTerrainDark else GeoMapTerrainLight
+  val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.24f)
+  val minorGridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f)
+  val contourColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
   val primaryColor = MaterialTheme.colorScheme.primary
   val secondaryColor = MaterialTheme.colorScheme.secondary
 
@@ -210,7 +220,8 @@ fun SharedMapScreen(
     if (placingMarkerMode) {
       Surface(
         color = MaterialTheme.colorScheme.tertiaryContainer,
-        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
       ) {
         Row(
           modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -236,7 +247,15 @@ fun SharedMapScreen(
         Modifier.weight(1f)
           .fillMaxWidth()
           .padding(horizontal = 12.dp)
-          .background(surfaceTint, MaterialTheme.shapes.large)
+          .clip(MaterialTheme.shapes.large)
+          .background(
+            Brush.radialGradient(
+              listOf(
+                surfaceTint,
+                MaterialTheme.colorScheme.surfaceContainer,
+              )
+            )
+          )
     ) {
       when (markersState) {
         is UiState.Loading -> {
@@ -312,16 +331,26 @@ fun SharedMapScreen(
               )
             }
 
-            // Coordinate grid lines
-            val cols = 6
-            val rows = 6
+            // Minor + Major coordinate grid lines
+            val cols = 12
+            val rows = 12
             for (i in 1 until cols) {
               val x = w * (i / cols.toFloat())
-              drawLine(gridColor, Offset(x, 0f), Offset(x, h), strokeWidth = 1.5f)
+              drawLine(
+                color = if (i % 2 == 0) gridColor else minorGridColor,
+                start = Offset(x, 0f),
+                end = Offset(x, h),
+                strokeWidth = if (i % 2 == 0) 1.5f else 1f,
+              )
             }
             for (j in 1 until rows) {
               val y = h * (j / rows.toFloat())
-              drawLine(gridColor, Offset(0f, y), Offset(w, y), strokeWidth = 1.5f)
+              drawLine(
+                color = if (j % 2 == 0) gridColor else minorGridColor,
+                start = Offset(0f, y),
+                end = Offset(w, y),
+                strokeWidth = if (j % 2 == 0) 1.5f else 1f,
+              )
             }
 
             // Topographic elevation contour curves
@@ -528,10 +557,10 @@ fun SharedMapScreen(
             }
           Card(
             shape = MaterialTheme.shapes.medium,
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier =
-              Modifier.width(220.dp)
+              Modifier.width(226.dp)
                 .clickable { activeMarkerSheet = mk }
                 .testTag("marker_tray_card_${mk.id}"),
           ) {
@@ -539,7 +568,12 @@ fun SharedMapScreen(
               modifier = Modifier.padding(12.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
-              Box(modifier = Modifier.size(12.dp).background(statusColor, CircleShape))
+              Box(
+                modifier = Modifier.size(28.dp).clip(CircleShape).background(statusColor.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center,
+              ) {
+                Box(modifier = Modifier.size(11.dp).background(statusColor, CircleShape))
+              }
               Spacer(Modifier.width(10.dp))
               Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -667,8 +701,24 @@ fun SharedMapScreen(
           }
         }
 
+        FilledTonalButton(
+          onClick = {
+            activeMarkerSheet = null
+            onAnalyzeMarkerWithGemini(mk)
+          },
+          modifier = Modifier.fillMaxWidth().testTag("marker_analyze_gemini_btn"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.AutoAwesome,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(Modifier.width(8.dp))
+          Text("Analizar punto con Gemini")
+        }
+
         Row(
-          modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 16.dp),
+          modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
           horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
           OutlinedButton(

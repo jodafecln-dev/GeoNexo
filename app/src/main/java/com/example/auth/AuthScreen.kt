@@ -1,5 +1,6 @@
 package com.example.auth
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +32,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -52,11 +54,17 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
+import com.example.ui.theme.GeoAiGradientEnd
+import com.example.ui.theme.GeoAiGradientStart
 
 @Composable
-fun AuthScreen(onAuthSuccess: () -> Unit) {
+fun AuthScreen(
+  onAuthSuccess: () -> Unit,
+  onEnterDemoMode: () -> Unit = {},
+) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val credentialManager = remember(context) { CredentialManager.create(context) }
@@ -80,8 +88,9 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
         .background(
           Brush.verticalGradient(
             listOf(
+              MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
               MaterialTheme.colorScheme.background,
-              MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+              MaterialTheme.colorScheme.background,
             )
           )
         )
@@ -98,19 +107,19 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
       verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
       Row(verticalAlignment = Alignment.CenterVertically) {
-        Surface(
-          shape = MaterialTheme.shapes.small,
-          color = MaterialTheme.colorScheme.primary,
-          modifier = Modifier.size(40.dp),
+        Box(
+          modifier =
+            Modifier.size(44.dp)
+              .clip(MaterialTheme.shapes.small)
+              .background(Brush.linearGradient(listOf(GeoAiGradientStart, GeoAiGradientEnd))),
+          contentAlignment = Alignment.Center,
         ) {
-          Box(contentAlignment = Alignment.Center) {
-            Icon(
-              imageVector = Icons.Filled.Map,
-              contentDescription = null,
-              tint = MaterialTheme.colorScheme.onPrimary,
-              modifier = Modifier.size(22.dp),
-            )
-          }
+          Icon(
+            imageVector = Icons.Filled.Map,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(22.dp),
+          )
         }
         Spacer(Modifier.width(12.dp))
         Column {
@@ -245,6 +254,32 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
         }
       }
 
+      OutlinedButton(
+        onClick = onEnterDemoMode,
+        enabled = !isLoading,
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+        modifier =
+          Modifier.fillMaxWidth()
+            .height(52.dp)
+            .testTag("guest_demo_entry_button"),
+      ) {
+        Text(
+          text = stringResource(com.example.R.string.enter_demo_mode),
+          style = MaterialTheme.typography.labelLarge,
+          fontWeight = FontWeight.SemiBold,
+          color = MaterialTheme.colorScheme.primary,
+        )
+      }
+
+      Text(
+        text = stringResource(com.example.R.string.demo_mode_caption),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth(),
+      )
+
       Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
@@ -274,9 +309,9 @@ private fun FeatureHighlightRow(
   subtitle: String,
 ) {
   Surface(
-    color = MaterialTheme.colorScheme.surface,
+    color = MaterialTheme.colorScheme.surfaceContainerLowest,
     shape = MaterialTheme.shapes.medium,
-    tonalElevation = 1.dp,
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     modifier = Modifier.fillMaxWidth(),
   ) {
     Row(

@@ -80,6 +80,7 @@ data class Channel(
   val pinnedDocTitle: String = "",
   val pinnedDocBody: String = "",
   val pinnedDocUpdatedBy: String = "",
+  val joinCode: String? = null,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 ) {

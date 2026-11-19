@@ -222,3 +222,144 @@ test("Channel, Messages, GeoMarkers & Presence: member flows succeed, non-member
     })
   );
 });
+
+test("Remote multi-user connection: Alice generates invite code, Bob joins and collaborates, Carol stays blocked", async () => {
+  const CAROL_UID = "carol_uid_789";
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const carolDb = testEnv.authenticatedContext(CAROL_UID).firestore();
+  const t0 = new Date(Date.now() - 5000);
+
+  // Alice creates channel and initial message/marker before Bob joins
+  await assertSucceeds(
+    aliceDb.collection("channels").doc(CHANNEL_ID).set({
+      ownerId: ALICE_UID,
+      memberUids: [ALICE_UID],
+      name: "obra-remota",
+      topic: "Coordinacion entre dos ubicaciones",
+      channelType: "FIELD",
+      pinnedDocTitle: "Bitacora Remota",
+      pinnedDocBody: "Inicio",
+      pinnedDocUpdatedBy: "Alice",
+      createdAt: t0,
+      updatedAt: t0,
+    })
+  );
+
+  await assertSucceeds(
+    aliceDb.collection("channels").doc(CHANNEL_ID).collection("messages").doc("msg_initial").set({
+      channelId: CHANNEL_ID,
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      memberUids: [ALICE_UID],
+      body: "Mensaje antes de invitar a Bob",
+      messageType: "TEXT",
+      createdAt: t0,
+      updatedAt: t0,
+    })
+  );
+
+  await assertSucceeds(
+    aliceDb.collection("channels").doc(CHANNEL_ID).collection("markers").doc("mk_initial").set({
+      channelId: CHANNEL_ID,
+      creatorId: ALICE_UID,
+      updatedByName: "Alice",
+      memberUids: [ALICE_UID],
+      title: "Punto inicial",
+      notes: "Creado por Alice",
+      category: "CHECKPOINT",
+      status: "OPEN",
+      lat: 19.43,
+      lng: -99.13,
+      mapX: 0.5,
+      mapY: 0.5,
+      createdAt: t0,
+      updatedAt: t0,
+    })
+  );
+
+  // Alice creates invite code GNX42A
+  await assertSucceeds(
+    aliceDb.collection("channel_invites").doc("GNX42A").set({
+      inviteCode: "GNX42A",
+      channelId: CHANNEL_ID,
+      channelName: "obra-remota",
+      ownerId: ALICE_UID,
+      createdAt: t0,
+    })
+  );
+
+  // Non-owner Bob cannot create invite for Alice's channel
+  await assertFails(
+    bobDb.collection("channel_invites").doc("BOB999").set({
+      inviteCode: "BOB999",
+      channelId: CHANNEL_ID,
+      channelName: "obra-remota",
+      ownerId: BOB_UID,
+      createdAt: t0,
+    })
+  );
+
+  // Listing all invites is strictly denied (no code scraping)
+  await assertFails(bobDb.collection("channel_invites").get());
+
+  // Bob looks up exact code GNX42A
+  await assertSucceeds(bobDb.collection("channel_invites").doc("GNX42A").get());
+
+  // Carol cannot join without a valid invite code
+  await assertFails(
+    carolDb.collection("channels").doc(CHANNEL_ID).update({
+      memberUids: [ALICE_UID, CAROL_UID],
+      joinCode: "FAKE00",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // Bob joins channel using GNX42A (cannot add Carol or modify name/ownerId)
+  await assertFails(
+    bobDb.collection("channels").doc(CHANNEL_ID).update({
+      memberUids: [ALICE_UID, BOB_UID, CAROL_UID],
+      joinCode: "GNX42A",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  await assertSucceeds(
+    bobDb.collection("channels").doc(CHANNEL_ID).update({
+      memberUids: [ALICE_UID, BOB_UID],
+      joinCode: "GNX42A",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // Once joined, Bob sees the channel, Alice's pre-existing messages & markers, and posts a reply
+  await assertSucceeds(
+    bobDb.collection("channels").where("memberUids", "array-contains", BOB_UID).get()
+  );
+  await assertSucceeds(
+    bobDb.collection("channels").doc(CHANNEL_ID).collection("messages").get()
+  );
+  await assertSucceeds(
+    bobDb.collection("channels").doc(CHANNEL_ID).collection("markers").get()
+  );
+  await assertSucceeds(
+    bobDb.collection("channels").doc(CHANNEL_ID).collection("messages").doc("msg_bob").set({
+      channelId: CHANNEL_ID,
+      senderId: BOB_UID,
+      senderName: "Bob",
+      memberUids: [ALICE_UID, BOB_UID],
+      body: "Conectado desde campo sur!",
+      messageType: "TEXT",
+      createdAt: new Date(Date.now() - 500),
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
+  // Carol is still denied read access to messages & markers
+  await assertFails(
+    carolDb.collection("channels").doc(CHANNEL_ID).collection("messages").get()
+  );
+  await assertFails(
+    carolDb.collection("channels").doc(CHANNEL_ID).collection("markers").get()
+  );
+});

@@ -105,7 +105,6 @@ class GeoNexoRepository(
       db.collection("channels")
         .document(channelId)
         .collection("messages")
-        .whereArrayContains("memberUids", userId)
         .snapshots()
         .map { snapshot ->
           val items =
@@ -134,7 +133,6 @@ class GeoNexoRepository(
       db.collection("channels")
         .document(channelId)
         .collection("markers")
-        .whereArrayContains("memberUids", userId)
         .snapshots()
         .map { snapshot ->
           val items =
@@ -160,7 +158,6 @@ class GeoNexoRepository(
       db.collection("channels")
         .document(channelId)
         .collection("presence")
-        .whereArrayContains("memberUids", userId)
         .snapshots()
         .map { snapshot ->
           snapshot
@@ -405,6 +402,116 @@ class GeoNexoRepository(
       throw e
     } catch (e: Exception) {
       handleFirestoreError(e, OperationType.CREATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun createChannelInvite(channel: Channel): Result<String> {
+    var path = "channel_invites"
+    return try {
+      val uid = requireUserId()
+      require(channel.ownerId == uid) {
+        "Solo el propietario del canal puede generar códigos de invitación."
+      }
+      val existingCode = channel.joinCode?.trim()?.uppercase()?.takeIf { it.length in 6..16 }
+      if (existingCode != null) {
+        val existingSnap = db.collection("channel_invites").document(existingCode).get().await()
+        if (existingSnap.exists()) {
+          return Result.success(existingCode)
+        }
+      }
+
+      val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+      val code =
+        buildString {
+          append("GNX")
+          repeat(5) { append(alphabet.random()) }
+        }
+
+      val inviteRef = db.collection("channel_invites").document(code)
+      path = inviteRef.path
+      inviteRef
+        .set(
+          mapOf(
+            "inviteCode" to code,
+            "channelId" to channel.id,
+            "channelName" to channel.name.take(60),
+            "ownerId" to uid,
+            "createdAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+
+      db.collection("channels")
+        .document(channel.id)
+        .update(
+          mapOf(
+            "joinCode" to code,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+
+      Result.success(code)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun joinChannelByInviteCode(rawCode: String): Result<Pair<String, String>> {
+    var path = "channel_invites"
+    return try {
+      val uid = requireUserId()
+      val cleanCode = rawCode.trim().uppercase().replace(Regex("[^A-Z0-9]"), "")
+      require(cleanCode.length in 6..16) {
+        "Ingresa un código válido de al menos 6 caracteres (ej. GNX42A8K)."
+      }
+
+      val inviteRef = db.collection("channel_invites").document(cleanCode)
+      path = inviteRef.path
+      val inviteSnap = inviteRef.get().await()
+      if (!inviteSnap.exists()) {
+        return Result.failure(
+          IllegalArgumentException("No se encontró ningún canal para el código $cleanCode.")
+        )
+      }
+
+      val channelId =
+        inviteSnap.getString("channelId")?.takeIf { it.isNotBlank() }
+          ?: return Result.failure(IllegalStateException("Invitación inválida."))
+      val channelName = inviteSnap.getString("channelName") ?: "canal"
+
+      // If the user is already a member, avoid a redundant write that could fail non-owner rules
+      val alreadyMember =
+        try {
+          db.collection("channels").document(channelId).get().await().exists()
+        } catch (_: FirebaseFirestoreException) {
+          false
+        }
+      if (alreadyMember) {
+        return Result.success(Pair(channelId, channelName))
+      }
+
+      path = "channels/$channelId"
+      db.collection("channels")
+        .document(channelId)
+        .update(
+          mapOf(
+            "memberUids" to FieldValue.arrayUnion(uid),
+            "joinCode" to cleanCode,
+            "updatedAt" to FieldValue.serverTimestamp(),
+          )
+        )
+        .await()
+
+      Result.success(Pair(channelId, channelName))
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
       Result.failure(e)
     }
   }

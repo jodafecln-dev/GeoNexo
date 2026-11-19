@@ -29,7 +29,13 @@ private val GeoDarkColorScheme =
     onSurface = DarkOnSurface,
     surfaceVariant = DarkSurfaceVariant,
     onSurfaceVariant = DarkOnSurfaceVariant,
+    surfaceContainerLowest = DarkSurfaceContainerLowest,
+    surfaceContainerLow = DarkSurfaceContainerLow,
+    surfaceContainer = DarkSurfaceContainer,
+    surfaceContainerHigh = DarkSurfaceContainerHigh,
+    surfaceContainerHighest = DarkSurfaceContainerHighest,
     outline = DarkOutline,
+    outlineVariant = DarkOutlineVariant,
     error = DarkError,
     onError = DarkOnError,
   )
@@ -54,7 +60,13 @@ private val GeoLightColorScheme =
     onSurface = LightOnSurface,
     surfaceVariant = LightSurfaceVariant,
     onSurfaceVariant = LightOnSurfaceVariant,
+    surfaceContainerLowest = LightSurfaceContainerLowest,
+    surfaceContainerLow = LightSurfaceContainerLow,
+    surfaceContainer = LightSurfaceContainer,
+    surfaceContainerHigh = LightSurfaceContainerHigh,
+    surfaceContainerHighest = LightSurfaceContainerHighest,
     outline = LightOutline,
+    outlineVariant = LightOutlineVariant,
     error = LightError,
     onError = LightOnError,
   )
@@ -79,17 +91,23 @@ private val GeoOutdoorHighContrastScheme =
     onSurface = OutdoorOnSurface,
     surfaceVariant = OutdoorSurfaceVariant,
     onSurfaceVariant = OutdoorOnSurfaceVariant,
+    surfaceContainerLowest = OutdoorSurface,
+    surfaceContainerLow = OutdoorSurfaceVariant,
+    surfaceContainer = OutdoorSurfaceVariant,
+    surfaceContainerHigh = OutdoorSurfaceVariant,
+    surfaceContainerHighest = OutdoorSurfaceVariant,
     outline = OutdoorOutline,
+    outlineVariant = OutdoorOutline,
     error = OutdoorError,
     onError = OutdoorOnError,
   )
 
 val GeoNexoShapes =
   Shapes(
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(22.dp),
-    extraLarge = RoundedCornerShape(28.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(18.dp),
+    large = RoundedCornerShape(24.dp),
+    extraLarge = RoundedCornerShape(30.dp),
   )
 
 @Composable

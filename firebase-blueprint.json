@@ -38,6 +38,7 @@
         "pinnedDocTitle": { "type": "string" },
         "pinnedDocBody": { "type": "string" },
         "pinnedDocUpdatedBy": { "type": "string" },
+        "joinCode": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
       },
@@ -52,6 +53,25 @@
         "pinnedDocUpdatedBy",
         "createdAt",
         "updatedAt"
+      ]
+    },
+    "ChannelInvite": {
+      "title": "ChannelInvite",
+      "description": "Short invite code allowing remote authenticated users to join an operational channel.",
+      "type": "object",
+      "properties": {
+        "inviteCode": { "type": "string" },
+        "channelId": { "type": "string" },
+        "channelName": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": [
+        "inviteCode",
+        "channelId",
+        "channelName",
+        "ownerId",
+        "createdAt"
       ]
     },
     "ChannelMessage": {
@@ -161,6 +181,10 @@
     "/channels/{channelId}": {
       "schema": { "$ref": "#/entities/Channel" },
       "description": "Team channels with pinned collaborative document."
+    },
+    "/channel_invites/{inviteCode}": {
+      "schema": { "$ref": "#/entities/ChannelInvite" },
+      "description": "Lookup codes enabling remote team members to join a channel."
     },
     "/channels/{channelId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/ChannelMessage" },
