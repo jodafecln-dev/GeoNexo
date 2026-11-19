@@ -28,7 +28,7 @@ service cloud.firestore {
     }
 
     function isValidMemberList(listVal) {
-      return listVal is list && listVal.size() >= 1 && listVal.size() <= 50 && listVal[0] is string;
+      return listVal is list && listVal.size() >= 1 && listVal.size() <= 200 && listVal[0] is string;
     }
 
     function isValidUserProfile(data) {
@@ -51,15 +51,27 @@ service cloud.firestore {
     function isValidChannel(data) {
       return data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
              isValidMemberList(data.memberUids) &&
+             (!('memberNames' in data) || (data.memberNames is map && data.memberNames.size() <= 200)) &&
              data.name is string && data.name.size() >= 2 && data.name.size() <= 60 &&
              data.topic is string && data.topic.size() <= 160 &&
              data.channelType in ['FIELD', 'PROJECT', 'LOGISTICS', 'GENERAL'] &&
              data.pinnedDocTitle is string && data.pinnedDocTitle.size() >= 1 && data.pinnedDocTitle.size() <= 100 &&
              data.pinnedDocBody is string && data.pinnedDocBody.size() <= 12000 &&
              data.pinnedDocUpdatedBy is string && data.pinnedDocUpdatedBy.size() >= 1 && data.pinnedDocUpdatedBy.size() <= 60 &&
-             (!('joinCode' in data) || (data.joinCode is string && isValidId(data.joinCode))) &&
+             (!('pinnedDocRevision' in data) || (data.pinnedDocRevision is int && data.pinnedDocRevision >= 1)) &&
+             (!('joinCode' in data) || data.joinCode == null || (data.joinCode is string && isValidId(data.joinCode))) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidDocRevision(data, channelId) {
+      return data.channelId == channelId &&
+             data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+             data.body is string && data.body.size() <= 12000 &&
+             data.revisionNumber is int && data.revisionNumber >= 1 &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
     }
 
     function isValidChannelInvite(data, inviteCode) {
@@ -69,7 +81,15 @@ service cloud.firestore {
              data.channelId is string && isValidId(data.channelId) &&
              data.channelName is string && data.channelName.size() >= 2 && data.channelName.size() <= 60 &&
              data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
-             data.createdAt is timestamp && data.createdAt <= request.time;
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             (!('expiresAt' in data) || (data.expiresAt is timestamp && data.expiresAt > data.createdAt));
+    }
+
+    function isGoogleWorkspaceUrl(uri) {
+      return uri is string &&
+             uri.size() >= 24 &&
+             uri.size() <= 500 &&
+             uri.matches('^https://(docs|drive)\\.google\\.com/.*');
     }
 
     function isValidMessage(data, channelId) {
@@ -78,12 +98,14 @@ service cloud.firestore {
              data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 60 &&
              isValidMemberList(data.memberUids) &&
              data.body is string && data.body.size() >= 1 && data.body.size() <= 2000 &&
-             data.messageType in ['TEXT', 'GEO_PIN', 'PHOTO', 'SYSTEM'] &&
+             data.messageType in ['TEXT', 'GEO_PIN', 'PHOTO', 'DOC_LINK', 'SYSTEM'] &&
              (!('parentMessageId' in data) || (data.parentMessageId is string && isValidId(data.parentMessageId))) &&
              (!('linkedMarkerId' in data) || (data.linkedMarkerId is string && isValidId(data.linkedMarkerId))) &&
              (!('linkedMarkerTitle' in data) || (data.linkedMarkerTitle is string && data.linkedMarkerTitle.size() >= 1 && data.linkedMarkerTitle.size() <= 80)) &&
              (!('attachmentLabel' in data) || (data.attachmentLabel is string && data.attachmentLabel.size() >= 1 && data.attachmentLabel.size() <= 120)) &&
-             (!('attachmentUri' in data) || (data.attachmentUri is string && data.attachmentUri.size() >= 1 && data.attachmentUri.size() <= 500)) &&
+             (!('attachmentUri' in data) || isGoogleWorkspaceUrl(data.attachmentUri)) &&
+             (!('attachmentSnippet' in data) || (data.attachmentSnippet is string && data.attachmentSnippet.size() >= 1 && data.attachmentSnippet.size() <= 500)) &&
+             (!('attachmentData' in data) || (data.attachmentData is string && data.attachmentData.size() >= 1 && data.attachmentData.size() <= 350000)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
@@ -101,6 +123,10 @@ service cloud.firestore {
              data.lng is number && data.lng >= -180 && data.lng <= 180 &&
              data.mapX is number && data.mapX >= 0 && data.mapX <= 1 &&
              data.mapY is number && data.mapY >= 0 && data.mapY <= 1 &&
+             (!('linkedDocId' in data) || data.linkedDocId == null || isValidId(data.linkedDocId)) &&
+             (!('linkedDocTitle' in data) || data.linkedDocTitle == null || (data.linkedDocTitle is string && data.linkedDocTitle.size() >= 1 && data.linkedDocTitle.size() <= 120)) &&
+             (!('linkedDocUri' in data) || data.linkedDocUri == null || isGoogleWorkspaceUrl(data.linkedDocUri)) &&
+             (!('linkedDocSnippet' in data) || data.linkedDocSnippet == null || (data.linkedDocSnippet is string && data.linkedDocSnippet.size() >= 1 && data.linkedDocSnippet.size() <= 500)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
@@ -141,7 +167,7 @@ service cloud.firestore {
       allow delete: if isOwner(userId) && isValidId(userId);
     }
 
-    // 2. Channel Invite Codes (non-listable, exact code lookup only)
+    // 2. Channel Invite Codes (non-listable, exact code lookup only, with optional expiration)
     match /channel_invites/{inviteCode} {
       allow get: if isSignedIn() && isValidId(inviteCode);
       allow list: if false;
@@ -151,12 +177,14 @@ service cloud.firestore {
                        isValidChannelInvite(incoming(), inviteCode) &&
                        incoming().ownerId == request.auth.uid &&
                        incoming().keys().hasAll(['inviteCode', 'channelId', 'channelName', 'ownerId', 'createdAt']) &&
-                       incoming().keys().hasOnly(['inviteCode', 'channelId', 'channelName', 'ownerId', 'createdAt']) &&
+                       incoming().keys().hasOnly(['inviteCode', 'channelId', 'channelName', 'ownerId', 'createdAt', 'expiresAt']) &&
                        exists(/databases/$(database)/documents/channels/$(incoming().channelId)) &&
                        get(/databases/$(database)/documents/channels/$(incoming().channelId)).data.ownerId == request.auth.uid;
 
       allow update: if false;
-      allow delete: if isSignedIn() && isValidId(inviteCode) && existing().ownerId == request.auth.uid;
+      allow delete: if isSignedIn() &&
+                       isValidId(inviteCode) &&
+                       (resource == null || existing().ownerId == request.auth.uid);
     }
 
     // 3. Operational Channels + Pinned Collaborative Doc
@@ -170,7 +198,7 @@ service cloud.firestore {
                        incoming().ownerId == request.auth.uid &&
                        request.auth.uid in incoming().memberUids &&
                        incoming().keys().hasAll(['ownerId', 'memberUids', 'name', 'topic', 'channelType', 'pinnedDocTitle', 'pinnedDocBody', 'pinnedDocUpdatedBy', 'createdAt', 'updatedAt']) &&
-                       incoming().keys().hasOnly(['ownerId', 'memberUids', 'name', 'topic', 'channelType', 'pinnedDocTitle', 'pinnedDocBody', 'pinnedDocUpdatedBy', 'joinCode', 'createdAt', 'updatedAt']);
+                       incoming().keys().hasOnly(['ownerId', 'memberUids', 'memberNames', 'name', 'topic', 'channelType', 'pinnedDocTitle', 'pinnedDocBody', 'pinnedDocUpdatedBy', 'pinnedDocRevision', 'joinCode', 'createdAt', 'updatedAt']);
 
       allow update: if isSignedIn() &&
                        isValidId(channelId) &&
@@ -179,16 +207,31 @@ service cloud.firestore {
                        incoming().createdAt == existing().createdAt &&
                        (
                          (request.auth.uid in existing().memberUids &&
-                          incoming().diff(existing()).affectedKeys().hasOnly(['pinnedDocTitle', 'pinnedDocBody', 'pinnedDocUpdatedBy', 'updatedAt']) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['pinnedDocTitle', 'pinnedDocBody', 'pinnedDocUpdatedBy', 'pinnedDocRevision', 'updatedAt']) &&
                           incoming().memberUids == existing().memberUids) ||
                          (existing().ownerId == request.auth.uid &&
                           request.auth.uid in incoming().memberUids &&
-                          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'topic', 'channelType', 'memberUids', 'joinCode', 'updatedAt'])) ||
+                          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'topic', 'channelType', 'memberUids', 'memberNames', 'joinCode', 'updatedAt'])) ||
+                         (request.auth.uid in existing().memberUids &&
+                          existing().ownerId != request.auth.uid &&
+                          !(request.auth.uid in incoming().memberUids) &&
+                          existing().memberUids.hasAll(incoming().memberUids) &&
+                          incoming().memberUids.size() == existing().memberUids.size() - 1 &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberNames', 'updatedAt']) &&
+                          (!('memberNames' in existing()) || !('memberNames' in incoming()) || incoming().memberNames.diff(existing().memberNames).affectedKeys().hasOnly([request.auth.uid]))) ||
                          (!(request.auth.uid in existing().memberUids) &&
-                          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'joinCode', 'updatedAt']) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberNames', 'joinCode', 'updatedAt']) &&
                           incoming().memberUids.hasAll(existing().memberUids) &&
                           incoming().memberUids.size() == existing().memberUids.size() + 1 &&
                           request.auth.uid in incoming().memberUids &&
+                          (!('memberNames' in incoming()) ||
+                           (request.auth.uid in incoming().memberNames &&
+                            incoming().memberNames[request.auth.uid] is string &&
+                            incoming().memberNames[request.auth.uid].size() >= 1 &&
+                            incoming().memberNames[request.auth.uid].size() <= 60 &&
+                            ((!('memberNames' in existing()) && incoming().memberNames.keys().hasOnly([request.auth.uid])) ||
+                             ('memberNames' in existing() && incoming().memberNames.diff(existing().memberNames).affectedKeys().hasOnly([request.auth.uid]))))) &&
+                          (!('pinnedDocRevision' in existing()) || incoming().pinnedDocRevision == existing().pinnedDocRevision) &&
                           incoming().pinnedDocTitle == existing().pinnedDocTitle &&
                           incoming().pinnedDocBody == existing().pinnedDocBody &&
                           incoming().pinnedDocUpdatedBy == existing().pinnedDocUpdatedBy &&
@@ -198,17 +241,17 @@ service cloud.firestore {
                           incoming().joinCode is string &&
                           isValidId(incoming().joinCode) &&
                           exists(/databases/$(database)/documents/channel_invites/$(incoming().joinCode)) &&
-                          get(/databases/$(database)/documents/channel_invites/$(incoming().joinCode)).data.channelId == channelId)
+                          get(/databases/$(database)/documents/channel_invites/$(incoming().joinCode)).data.channelId == channelId &&
+                          (!('expiresAt' in get(/databases/$(database)/documents/channel_invites/$(incoming().joinCode)).data) ||
+                           request.time <= get(/databases/$(database)/documents/channel_invites/$(incoming().joinCode)).data.expiresAt))
                        );
 
       allow delete: if isSignedIn() && isValidId(channelId) && existing().ownerId == request.auth.uid;
 
-      // 4. Messages & Threads
+      // 4. Messages & Threads (strictly gated by live channel membership)
       match /messages/{messageId} {
-        allow get: if isSignedIn() && isValidId(channelId) && isValidId(messageId) &&
-                      (request.auth.uid in existing().memberUids || isChannelMember(channelId));
-        allow list: if isSignedIn() && isValidId(channelId) &&
-                       (request.auth.uid in resource.data.memberUids || isChannelMember(channelId));
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(messageId) && isChannelMember(channelId);
+        allow list: if isSignedIn() && isValidId(channelId) && isChannelMember(channelId);
 
         allow create: if isSignedIn() &&
                          isValidId(channelId) &&
@@ -217,12 +260,13 @@ service cloud.firestore {
                          incoming().senderId == request.auth.uid &&
                          request.auth.uid in incoming().memberUids &&
                          incoming().keys().hasAll(['channelId', 'senderId', 'senderName', 'memberUids', 'body', 'messageType', 'createdAt', 'updatedAt']) &&
-                         incoming().keys().hasOnly(['channelId', 'senderId', 'senderName', 'memberUids', 'body', 'parentMessageId', 'linkedMarkerId', 'linkedMarkerTitle', 'attachmentLabel', 'attachmentUri', 'messageType', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['channelId', 'senderId', 'senderName', 'memberUids', 'body', 'parentMessageId', 'linkedMarkerId', 'linkedMarkerTitle', 'attachmentLabel', 'attachmentUri', 'attachmentSnippet', 'attachmentData', 'messageType', 'createdAt', 'updatedAt']) &&
                          isChannelMember(channelId);
 
         allow update: if isSignedIn() &&
                          isValidId(channelId) &&
                          isValidId(messageId) &&
+                         isChannelMember(channelId) &&
                          isValidMessage(incoming(), channelId) &&
                          existing().senderId == request.auth.uid &&
                          incoming().senderId == existing().senderId &&
@@ -231,15 +275,17 @@ service cloud.firestore {
                          incoming().memberUids == existing().memberUids &&
                          incoming().diff(existing()).affectedKeys().hasOnly(['body', 'updatedAt']);
 
-        allow delete: if isSignedIn() && isValidId(channelId) && isValidId(messageId) && existing().senderId == request.auth.uid;
+        allow delete: if isSignedIn() &&
+                         isValidId(channelId) &&
+                         isValidId(messageId) &&
+                         isChannelMember(channelId) &&
+                         existing().senderId == request.auth.uid;
       }
 
-      // 5. Shared GeoMarkers & Point Notes
+      // 5. Shared GeoMarkers & Point Notes (strictly gated by live channel membership)
       match /markers/{markerId} {
-        allow get: if isSignedIn() && isValidId(channelId) && isValidId(markerId) &&
-                      (request.auth.uid in existing().memberUids || isChannelMember(channelId));
-        allow list: if isSignedIn() && isValidId(channelId) &&
-                       (request.auth.uid in resource.data.memberUids || isChannelMember(channelId));
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(markerId) && isChannelMember(channelId);
+        allow list: if isSignedIn() && isValidId(channelId) && isChannelMember(channelId);
 
         allow create: if isSignedIn() &&
                          isValidId(channelId) &&
@@ -248,51 +294,73 @@ service cloud.firestore {
                          incoming().creatorId == request.auth.uid &&
                          request.auth.uid in incoming().memberUids &&
                          incoming().keys().hasAll(['channelId', 'creatorId', 'updatedByName', 'memberUids', 'title', 'notes', 'category', 'status', 'lat', 'lng', 'mapX', 'mapY', 'createdAt', 'updatedAt']) &&
-                         incoming().keys().hasOnly(['channelId', 'creatorId', 'updatedByName', 'memberUids', 'title', 'notes', 'category', 'status', 'lat', 'lng', 'mapX', 'mapY', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['channelId', 'creatorId', 'updatedByName', 'memberUids', 'title', 'notes', 'category', 'status', 'lat', 'lng', 'mapX', 'mapY', 'linkedDocId', 'linkedDocTitle', 'linkedDocUri', 'linkedDocSnippet', 'createdAt', 'updatedAt']) &&
                          isChannelMember(channelId);
 
         allow update: if isSignedIn() &&
                          isValidId(channelId) &&
                          isValidId(markerId) &&
+                         isChannelMember(channelId) &&
                          isValidMarker(incoming(), channelId) &&
-                         (request.auth.uid in existing().memberUids || isChannelMember(channelId)) &&
                          incoming().creatorId == existing().creatorId &&
                          incoming().channelId == existing().channelId &&
                          incoming().createdAt == existing().createdAt &&
                          incoming().memberUids == existing().memberUids &&
-                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'notes', 'category', 'status', 'lat', 'lng', 'mapX', 'mapY', 'updatedByName', 'updatedAt']);
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'notes', 'category', 'status', 'lat', 'lng', 'mapX', 'mapY', 'linkedDocId', 'linkedDocTitle', 'linkedDocUri', 'linkedDocSnippet', 'updatedByName', 'updatedAt']);
 
-        allow delete: if isSignedIn() && isValidId(channelId) && isValidId(markerId) &&
+        allow delete: if isSignedIn() &&
+                         isValidId(channelId) &&
+                         isValidId(markerId) &&
+                         isChannelMember(channelId) &&
                          (existing().creatorId == request.auth.uid ||
                           get(/databases/$(database)/documents/channels/$(channelId)).data.ownerId == request.auth.uid);
       }
 
-      // 6. Opt-in Live Location Presence (no PII)
+      // 6. Opt-in Live Location Presence (no PII, strictly gated by live channel membership)
       match /presence/{userId} {
-        allow get: if isSignedIn() && isValidId(channelId) && isValidId(userId) &&
-                      (request.auth.uid in existing().memberUids || isChannelMember(channelId));
-        allow list: if isSignedIn() && isValidId(channelId) &&
-                       (request.auth.uid in resource.data.memberUids || isChannelMember(channelId));
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(userId) && isChannelMember(channelId);
+        allow list: if isSignedIn() && isValidId(channelId) && isChannelMember(channelId);
 
         allow create: if isOwner(userId) &&
                          isValidId(channelId) &&
                          isValidId(userId) &&
+                         isChannelMember(channelId) &&
                          isValidPresence(incoming(), channelId, userId) &&
                          request.auth.uid in incoming().memberUids &&
                          incoming().keys().hasAll(['channelId', 'userId', 'displayName', 'memberUids', 'sharingActive', 'lat', 'lng', 'mapX', 'mapY', 'accuracyMeters', 'updatedAt']) &&
-                         incoming().keys().hasOnly(['channelId', 'userId', 'displayName', 'memberUids', 'sharingActive', 'lat', 'lng', 'mapX', 'mapY', 'accuracyMeters', 'updatedAt']) &&
-                         isChannelMember(channelId);
+                         incoming().keys().hasOnly(['channelId', 'userId', 'displayName', 'memberUids', 'sharingActive', 'lat', 'lng', 'mapX', 'mapY', 'accuracyMeters', 'updatedAt']);
 
         allow update: if isOwner(userId) &&
                          isValidId(channelId) &&
                          isValidId(userId) &&
+                         isChannelMember(channelId) &&
                          isValidPresence(incoming(), channelId, userId) &&
                          incoming().userId == existing().userId &&
                          incoming().channelId == existing().channelId &&
                          incoming().memberUids == existing().memberUids &&
                          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'sharingActive', 'lat', 'lng', 'mapX', 'mapY', 'accuracyMeters', 'updatedAt']);
 
-        allow delete: if isOwner(userId) && isValidId(channelId) && isValidId(userId);
+        allow delete: if isOwner(userId) &&
+                         isValidId(channelId) &&
+                         isValidId(userId) &&
+                         isChannelMember(channelId);
+      }
+
+      // 7. Immutable Bitacora Revision History
+      match /doc_revisions/{revisionId} {
+        allow get: if isSignedIn() && isValidId(channelId) && isValidId(revisionId) && isChannelMember(channelId);
+        allow list: if isSignedIn() && isValidId(channelId) && isChannelMember(channelId);
+
+        allow create: if isSignedIn() &&
+                         isValidId(channelId) &&
+                         isValidId(revisionId) &&
+                         isValidDocRevision(incoming(), channelId) &&
+                         incoming().authorId == request.auth.uid &&
+                         incoming().keys().hasAll(['channelId', 'authorId', 'authorName', 'title', 'body', 'revisionNumber', 'createdAt']) &&
+                         incoming().keys().hasOnly(['channelId', 'authorId', 'authorName', 'title', 'body', 'revisionNumber', 'createdAt']) &&
+                         isChannelMember(channelId);
+
+        allow update, delete: if false;
       }
     }
   }

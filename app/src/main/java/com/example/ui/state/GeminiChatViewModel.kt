@@ -67,6 +67,8 @@ class GeminiChatViewModel(
     prompt: String,
     contextSnapshot: ChannelContextSnapshot,
     imageUri: Uri? = null,
+    imageBytes: ByteArray? = null,
+    externalDocContext: String? = null,
   ) {
     val cleanPrompt = prompt.trim()
     if (cleanPrompt.isEmpty()) return
@@ -80,7 +82,7 @@ class GeminiChatViewModel(
         id = UUID.randomUUID().toString(),
         isUser = true,
         text = cleanPrompt,
-        hasImageAttachment = imageUri != null,
+        hasImageAttachment = imageUri != null || imageBytes != null,
       )
 
     _historyByChannel.update { map ->
@@ -99,6 +101,8 @@ class GeminiChatViewModel(
               contextSnapshot = contextSnapshot,
               history = currentHistory,
               attachedImageUri = imageUri,
+              attachedImageBytes = imageBytes,
+              externalDocContext = externalDocContext,
             )
             .collect { chunk ->
               accumulated.append(chunk)
@@ -158,6 +162,27 @@ class GeminiChatViewModel(
       prompt =
         "Analiza el marcador '${marker.title}' (${marker.resolvedCategory().labelEs}, estado ${marker.resolvedStatus().labelEs}, notas: '${marker.notes}'). Sugiere pasos operativos y si conviene enviar un aviso al equipo.",
       contextSnapshot = contextSnapshot,
+    )
+  }
+
+  fun analyzeGoogleDoc(
+    docTitle: String,
+    docUri: String,
+    docContentOrSnippet: String,
+    contextSnapshot: ChannelContextSnapshot,
+  ) {
+    val docContext =
+      buildString {
+        append("Título: ").append(docTitle).append('\n')
+        append("Enlace oficial: ").append(docUri).append('\n')
+        append("Contenido / Extracto:\n")
+        append(docContentOrSnippet.ifBlank { "Sin texto extraído; evalúa según el título y el contexto del canal." })
+      }
+    sendMessage(
+      prompt =
+        "Analiza el documento de Google Docs '$docTitle' adjunto en el contexto del canal. Resume los puntos técnicos clave, riesgos en campo y propone acciones concretas para el equipo.",
+      contextSnapshot = contextSnapshot,
+      externalDocContext = docContext,
     )
   }
 

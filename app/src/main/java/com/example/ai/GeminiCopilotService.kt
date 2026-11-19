@@ -116,9 +116,13 @@ class GeminiCopilotService(private val appContext: Context) {
     contextSnapshot: ChannelContextSnapshot,
     history: List<GeminiChatTurn>,
     attachedImageUri: Uri?,
+    attachedImageBytes: ByteArray? = null,
+    externalDocContext: String? = null,
   ): Flow<String> = flow {
-    val contextBlock = buildContextPrompt(contextSnapshot)
-    val imageBitmap = attachedImageUri?.let { loadScaledBitmap(it) }
+    val contextBlock = buildContextPrompt(contextSnapshot, externalDocContext)
+    val imageBitmap =
+      attachedImageUri?.let { loadScaledBitmap(it) }
+        ?: attachedImageBytes?.let { bytes -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
 
     val historyContents: List<Content> =
       history.takeLast(8).map { turn ->
@@ -197,15 +201,19 @@ class GeminiCopilotService(private val appContext: Context) {
     }
   }
 
-  private fun buildContextPrompt(snapshot: ChannelContextSnapshot): String {
+  private fun buildContextPrompt(
+    snapshot: ChannelContextSnapshot,
+    externalDocContext: String? = null,
+  ): String {
     val ch = snapshot.channel
     val markersSummary =
       if (snapshot.markers.isEmpty()) "Sin marcadores registrados."
       else
         snapshot.markers.take(20).joinToString("\n") { mk ->
+          val docSuffix = mk.linkedDocTitle?.let { " | Google Doc: $it" } ?: ""
           "- [${mk.title}] (${mk.resolvedCategory().labelEs}, ${mk.resolvedStatus().labelEs}) Coords(${
             String.format("%.4f", mk.lat)
-          }, ${String.format("%.4f", mk.lng)}) Nota: ${mk.notes.ifBlank { "ninguna" }}"
+          }, ${String.format("%.4f", mk.lng)}) Nota: ${mk.notes.ifBlank { "ninguna" }}$docSuffix"
         }
 
     val messagesSummary =
@@ -213,7 +221,11 @@ class GeminiCopilotService(private val appContext: Context) {
       else
         snapshot.recentMessages.takeLast(15).joinToString("\n") { msg ->
           val pinInfo = msg.linkedMarkerTitle?.let { " [Vinculado a #$it]" } ?: ""
-          "- ${msg.senderName}: ${msg.body}$pinInfo"
+          val docInfo =
+            if (!msg.attachmentUri.isNullOrBlank()) {
+              " [Google Doc adjunto: ${msg.attachmentLabel ?: msg.attachmentUri}]"
+            } else ""
+          "- ${msg.senderName}: ${msg.body}$pinInfo$docInfo"
         }
 
     val presenceSummary =
@@ -222,6 +234,11 @@ class GeminiCopilotService(private val appContext: Context) {
         snapshot.activePresence.joinToString("\n") { p ->
           "- ${p.displayName} en (${String.format("%.4f", p.lat)}, ${String.format("%.4f", p.lng)}), precisión ±${p.accuracyMeters.toInt()}m"
         }
+
+    val externalDocBlock =
+      if (!externalDocContext.isNullOrBlank()) {
+        "\n\nDOCUMENTO GOOGLE DOCS SELECCIONADO PARA ANÁLISIS:\n${externalDocContext.take(7000)}"
+      } else ""
 
     return """
       CONTEXTO EN VIVO DEL CANAL GEONEXO
@@ -238,7 +255,7 @@ class GeminiCopilotService(private val appContext: Context) {
       $presenceSummary
 
       MENSAJES RECIENTES DEL EQUIPO:
-      $messagesSummary
+      $messagesSummary$externalDocBlock
     """.trimIndent()
   }
 

@@ -3,7 +3,10 @@ package com.example.ui.screens
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -36,6 +39,7 @@ import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Tune
@@ -45,6 +49,9 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.Workspaces
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -61,9 +68,11 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,6 +95,9 @@ import com.example.ui.state.GeminiChatViewModel
 import com.example.ui.state.GeoNexoViewModel
 import com.example.ui.state.UiState
 import com.example.ui.state.WorkspaceTab
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.launch
@@ -117,16 +129,36 @@ fun GeoNexoHubScreen(
   val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
   val offlineDisabled by viewModel.offlineNetworkDisabled.collectAsStateWithLifecycle()
   val locationSharingActive by viewModel.locationSharingRequested.collectAsStateWithLifecycle()
+  val fieldAlertsEnabled by viewModel.fieldAlertsEnabled.collectAsStateWithLifecycle()
+  val lastKnownCoords by viewModel.lastKnownCoords.collectAsStateWithLifecycle()
+  val messagePageLimit by viewModel.messagePageLimit.collectAsStateWithLifecycle()
+  val docRevisions by viewModel.docRevisions.collectAsStateWithLifecycle()
   val activeInviteDialog by viewModel.activeInviteDialog.collectAsStateWithLifecycle()
   val inviteActionLoading by viewModel.inviteActionLoading.collectAsStateWithLifecycle()
+  val fieldAlertsHistory by viewModel.fieldAlertsHistory.collectAsStateWithLifecycle()
+  val workspaceState by viewModel.workspaceState.collectAsStateWithLifecycle()
   val aiStreamState by geminiViewModel.aiStreamState.collectAsStateWithLifecycle()
   val geminiTurns by geminiViewModel.activeChannelTurns.collectAsStateWithLifecycle()
+
+  val workspaceConsentLauncher =
+    rememberLauncherForActivityResult(
+      contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+      viewModel.onWorkspaceConsentCompleted(result.data)
+    }
+
+  LaunchedEffect(Unit) {
+    viewModel.pendingWorkspaceConsent.collect { intentSender ->
+      workspaceConsentLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+    }
+  }
 
   LaunchedEffect(activeChannel?.id) {
     geminiViewModel.setActiveChannel(activeChannel?.id)
   }
 
   var showSettingsSheet by remember { mutableStateOf(false) }
+  var showAlertsDialog by remember { mutableStateOf(false) }
 
   fun launchGoogleSignIn() {
     onGoogleSignInClicked(
@@ -168,6 +200,41 @@ fun GeoNexoHubScreen(
       }
   }
 
+  // Continuous low-battery GPS updates (30s interval / 15m distance) only while opt-in is active
+  @SuppressLint("MissingPermission")
+  DisposableEffect(locationSharingActive, activeChannel?.id) {
+    val hasCoarse =
+      ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+    val hasFine =
+      ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+    if (locationSharingActive && activeChannel != null && (hasCoarse || hasFine)) {
+      val request =
+        LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
+          .setMinUpdateIntervalMillis(15_000L)
+          .setMinUpdateDistanceMeters(15f)
+          .build()
+      val callback =
+        object : LocationCallback() {
+          override fun onLocationResult(result: LocationResult) {
+            val loc = result.lastLocation ?: return
+            viewModel.setLocationSharingEnabled(
+              enabled = true,
+              lat = loc.latitude,
+              lng = loc.longitude,
+              accuracy = loc.accuracy.toDouble(),
+              silentUpdate = true,
+            )
+          }
+        }
+      fusedLocationClient.requestLocationUpdates(request, callback, Looper.getMainLooper())
+      onDispose { fusedLocationClient.removeLocationUpdates(callback) }
+    } else {
+      onDispose {}
+    }
+  }
+
   val locationPermissionLauncher =
     rememberLauncherForActivityResult(
       contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -181,6 +248,37 @@ fun GeoNexoHubScreen(
         viewModel.setLocationSharingEnabled(enabled = false)
       }
     }
+
+  val notificationPermissionLauncher =
+    rememberLauncherForActivityResult(
+      contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+      viewModel.setFieldAlertsEnabled(granted)
+      if (!granted) {
+        scope.launch {
+          snackbarHostState.showSnackbar("Permiso de notificaciones denegado por el sistema.")
+        }
+      }
+    }
+
+  fun handleToggleFieldAlerts(enable: Boolean) {
+    if (!enable) {
+      viewModel.setFieldAlertsEnabled(false)
+      return
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      val hasPermission =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+          PackageManager.PERMISSION_GRANTED
+      if (hasPermission) {
+        viewModel.setFieldAlertsEnabled(true)
+      } else {
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+      }
+    } else {
+      viewModel.setFieldAlertsEnabled(true)
+    }
+  }
 
   fun handleToggleLocationSharing(enable: Boolean) {
     if (!enable) {
@@ -303,6 +401,27 @@ fun GeoNexoHubScreen(
                 },
               )
               Spacer(Modifier.width(4.dp))
+              val unreadCount = fieldAlertsHistory.count { it.unread }
+              IconButton(
+                onClick = {
+                  showAlertsDialog = true
+                  viewModel.markAllAlertsRead()
+                },
+                modifier = Modifier.testTag("open_alerts_center_button"),
+              ) {
+                BadgedBox(
+                  badge = {
+                    if (unreadCount > 0) {
+                      Badge { Text(unreadCount.coerceAtMost(9).toString()) }
+                    }
+                  }
+                ) {
+                  Icon(
+                    imageVector = Icons.Filled.Notifications,
+                    contentDescription = "Centro de alertas de campo",
+                  )
+                }
+              }
               IconButton(
                 onClick = { showSettingsSheet = true },
                 modifier = Modifier.testTag("open_settings_button"),
@@ -411,6 +530,9 @@ fun GeoNexoHubScreen(
                 },
                 onCreateChannel = viewModel::createChannel,
                 onInviteChannel = viewModel::requestInviteCodeForChannel,
+                onRevokeInvite = viewModel::revokeInviteCode,
+                onRemoveMember = viewModel::removeMember,
+                onLeaveChannel = viewModel::leaveChannel,
                 onDismissInviteDialog = viewModel::dismissInviteDialog,
                 onJoinChannelByCode = viewModel::joinChannelByCode,
                 onRequestGoogleSignInForRemote = { launchGoogleSignIn() },
@@ -421,12 +543,25 @@ fun GeoNexoHubScreen(
               ChatScreen(
                 channel = activeChannel,
                 currentUserId = currentUserId,
+                isAuthenticated = isAuthenticated,
                 messagesState = messagesState,
                 markers = markersList,
+                workspaceState = workspaceState,
                 activeThreadParentId = activeThreadParentId,
+                currentPageLimit = messagePageLimit,
+                onLoadOlderMessages = viewModel::loadOlderMessages,
                 onOpenThread = viewModel::openThread,
                 onJumpToMarker = viewModel::openMarkerOnMap,
                 onSendMessage = viewModel::sendMessage,
+                onRequestDriveDocs = viewModel::requestWorkspaceAuthAndLoadDocs,
+                onCreateGoogleDocForChat = { title, body ->
+                  viewModel.createAndShareGoogleDoc(
+                    title = title,
+                    bodyText = body,
+                    targetMarker = null,
+                    postToChat = true,
+                  )
+                },
                 onSummarizeWithGemini = {
                   viewModel.selectTab(WorkspaceTab.GEMINI)
                   if (isAuthenticated) {
@@ -435,15 +570,52 @@ fun GeoNexoHubScreen(
                     }
                   }
                 },
+                onAnalyzePhotoWithGemini = { msg, bytes ->
+                  viewModel.selectTab(WorkspaceTab.GEMINI)
+                  if (isAuthenticated) {
+                    buildChannelSnapshot()?.let { snapshot ->
+                      geminiViewModel.sendMessage(
+                        prompt =
+                          "Analiza esta foto compartida por ${msg.senderName} ('${msg.body}'). Describe hallazgos técnicos y sugiere acciones de campo.",
+                        contextSnapshot = snapshot,
+                        imageBytes = bytes,
+                      )
+                    }
+                  }
+                },
+                onAnalyzeGoogleDocWithGemini = { title, uri, snippet ->
+                  viewModel.selectTab(WorkspaceTab.GEMINI)
+                  if (isAuthenticated) {
+                    viewModel.fetchGoogleDocContentForGemini(
+                      docTitle = title,
+                      docUri = uri,
+                      cachedSnippet = snippet,
+                    ) { resolvedTitle, resolvedUri, contentText ->
+                      buildChannelSnapshot()?.let { snapshot ->
+                        geminiViewModel.analyzeGoogleDoc(
+                          docTitle = resolvedTitle,
+                          docUri = resolvedUri,
+                          docContentOrSnippet = contentText,
+                          contextSnapshot = snapshot,
+                        )
+                      }
+                    }
+                  }
+                },
+                onShowFeedback = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
               )
             }
             WorkspaceTab.MAP -> {
               SharedMapScreen(
                 channel = activeChannel,
+                isAuthenticated = isAuthenticated,
                 markersState = markersState,
                 presenceList = presenceList,
+                workspaceState = workspaceState,
                 focusedMarkerId = focusedMarkerId,
                 locationSharingActive = locationSharingActive,
+                offlineNetworkDisabled = offlineDisabled,
+                lastKnownCoords = lastKnownCoords,
                 onClearFocusedMarker = viewModel::clearFocusedMarker,
                 onToggleLocationSharing = {
                   handleToggleLocationSharing(!locationSharingActive)
@@ -466,15 +638,53 @@ fun GeoNexoHubScreen(
                     }
                   }
                 },
+                onRequestDriveDocs = viewModel::requestWorkspaceAuthAndLoadDocs,
+                onLinkDocToMarker = viewModel::linkGoogleDocToMarker,
+                onUnlinkDocFromMarker = viewModel::unlinkGoogleDocFromMarker,
+                onCreateDocForMarker = { mk, title, body ->
+                  viewModel.createAndShareGoogleDoc(
+                    title = title,
+                    bodyText = body,
+                    targetMarker = mk,
+                    postToChat = true,
+                  )
+                },
+                onAnalyzeGoogleDocWithGemini = { title, uri, snippet ->
+                  viewModel.selectTab(WorkspaceTab.GEMINI)
+                  if (isAuthenticated) {
+                    viewModel.fetchGoogleDocContentForGemini(
+                      docTitle = title,
+                      docUri = uri,
+                      cachedSnippet = snippet,
+                    ) { resolvedTitle, resolvedUri, contentText ->
+                      buildChannelSnapshot()?.let { snapshot ->
+                        geminiViewModel.analyzeGoogleDoc(
+                          docTitle = resolvedTitle,
+                          docUri = resolvedUri,
+                          docContentOrSnippet = contentText,
+                          contextSnapshot = snapshot,
+                        )
+                      }
+                    }
+                  }
+                },
+                onShowFeedback = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
               )
             }
             WorkspaceTab.DOC -> {
               CollaborativeDocScreen(
                 channel = activeChannel,
+                isAuthenticated = isAuthenticated,
+                workspaceLoading = workspaceState.isLoading,
                 markers = markersList,
+                docRevisions = docRevisions,
                 onSaveDoc = viewModel::updatePinnedDoc,
+                onRestoreRevision = viewModel::restoreDocRevision,
                 onOpenMarkerOnMap = viewModel::openMarkerOnMap,
-                onShowFeedback = { /* handled via clipboard + UI */ },
+                onExportToGoogleDocs = {
+                  activeChannel?.let { ch -> viewModel.exportBitacoraToGoogleDoc(ch, markersList) }
+                },
+                onShowFeedback = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } },
                 onAssistWithGemini = {
                   viewModel.selectTab(WorkspaceTab.GEMINI)
                   if (isAuthenticated) {
@@ -530,6 +740,7 @@ fun GeoNexoHubScreen(
       darkMode = userProfile?.darkMode ?: false,
       highContrastMode = userProfile?.highContrastMode ?: false,
       locationSharingActive = locationSharingActive,
+      fieldAlertsEnabled = fieldAlertsEnabled,
       offlineModeSimulated = offlineDisabled,
       onToggleDarkMode = { dark ->
         viewModel.updateAccessibilityAndTheme(
@@ -546,6 +757,9 @@ fun GeoNexoHubScreen(
       onToggleLocationSharing = { enabled ->
         handleToggleLocationSharing(enabled)
       },
+      onToggleFieldAlerts = { enabled ->
+        handleToggleFieldAlerts(enabled)
+      },
       onToggleOfflineMode = viewModel::toggleOfflineSimulation,
       onGoogleSignIn = { launchGoogleSignIn() },
       onExitDemoMode = {
@@ -557,6 +771,56 @@ fun GeoNexoHubScreen(
         signOut(credentialManager, scope, onSignOutComplete = onSignedOut)
       },
       onDismiss = { showSettingsSheet = false },
+    )
+  }
+
+  if (showAlertsDialog) {
+    AlertDialog(
+      onDismissRequest = { showAlertsDialog = false },
+      title = { Text("Centro de Alertas de Campo") },
+      text = {
+        if (fieldAlertsHistory.isEmpty()) {
+          Text(
+            text =
+              "Sin incidencias remotas nuevas en esta sesión. Las incidencias de mapa y mensajes con pin aparecerán aquí y por notificación push local.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        } else {
+          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            fieldAlertsHistory.take(8).forEach { alert ->
+              Surface(
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier =
+                  Modifier.fillMaxWidth().clickable {
+                    showAlertsDialog = false
+                    viewModel.openAlertTarget(alert)
+                  },
+              ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                  Text(
+                    text = alert.title,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                  )
+                  Text(
+                    text = alert.body,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+              }
+            }
+          }
+        }
+      },
+      confirmButton = {
+        TextButton(onClick = { showAlertsDialog = false }) { Text("Cerrar") }
+      },
     )
   }
 }

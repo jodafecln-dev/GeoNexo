@@ -1,20 +1,30 @@
 package com.example.ui.state
 
+import android.content.Context
+import android.content.Intent
+import android.content.IntentSender
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.GeminiSuggestedAction
+import com.example.data.local.DemoLocalRepository
 import com.example.data.model.Channel
 import com.example.data.model.ChannelMessage
 import com.example.data.model.ChannelPresence
 import com.example.data.model.ChannelType
+import com.example.data.model.DocRevision
 import com.example.data.model.GeoMarker
 import com.example.data.model.MarkerCategory
 import com.example.data.model.MarkerStatus
-import com.example.data.model.MessageType
 import com.example.data.model.SyncedCollection
 import com.example.data.model.UserProfile
 import com.example.data.remote.GeoNexoRepository
+import com.example.util.FieldMediaAndAlerts
+import com.example.workspace.GoogleDocSummary
+import com.example.workspace.GoogleWorkspaceManager
+import com.example.workspace.WorkspaceAuthResult
+import com.example.workspace.WorkspaceUnauthorizedException
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -37,7 +47,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
-import java.util.UUID
 
 sealed interface UiState<out T> {
   data object Loading : UiState<Nothing>
@@ -58,10 +67,30 @@ data class ActiveInviteCode(
   val inviteCode: String,
 )
 
+data class FieldAlertItem(
+  val id: String,
+  val channelId: String,
+  val channelName: String,
+  val title: String,
+  val body: String,
+  val markerId: String?,
+  val timestampMillis: Long,
+  val unread: Boolean = true,
+)
+
+data class WorkspaceUiState(
+  val isAuthorized: Boolean = false,
+  val isLoading: Boolean = false,
+  val docs: List<GoogleDocSummary> = emptyList(),
+  val errorMessage: String? = null,
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class GeoNexoViewModel(
   private val repository: GeoNexoRepository?,
   private val db: FirebaseFirestore?,
+  private val demoLocalRepository: DemoLocalRepository?,
+  private val appContext: Context,
   private val currentUserId: String,
   val isDemoMode: Boolean = false,
 ) : ViewModel() {
@@ -81,11 +110,17 @@ class GeoNexoViewModel(
   private val _searchQuery = MutableStateFlow("")
   val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+  private val _messagePageLimit = MutableStateFlow(INITIAL_MESSAGE_PAGE_SIZE)
+  val messagePageLimit: StateFlow<Int> = _messagePageLimit.asStateFlow()
+
   private val _offlineNetworkDisabled = MutableStateFlow(false)
   val offlineNetworkDisabled: StateFlow<Boolean> = _offlineNetworkDisabled.asStateFlow()
 
   private val _locationSharingRequested = MutableStateFlow(false)
   val locationSharingRequested: StateFlow<Boolean> = _locationSharingRequested.asStateFlow()
+
+  private val _fieldAlertsEnabled = MutableStateFlow(true)
+  val fieldAlertsEnabled: StateFlow<Boolean> = _fieldAlertsEnabled.asStateFlow()
 
   private val _lastKnownCoords = MutableStateFlow(Pair(19.4326, -99.1332))
   val lastKnownCoords: StateFlow<Pair<Double, Double>> = _lastKnownCoords.asStateFlow()
@@ -102,27 +137,39 @@ class GeoNexoViewModel(
   private val _inviteActionLoading = MutableStateFlow(false)
   val inviteActionLoading: StateFlow<Boolean> = _inviteActionLoading.asStateFlow()
 
-  // Local in-memory state used exclusively when isDemoMode == true (zero Firestore calls)
-  private val _demoProfile =
-    MutableStateFlow(
-      UserProfile(
-        id = currentUserId,
-        userId = currentUserId,
-        displayName = "Explorador Local",
-        roleTitle = "Modo Prueba (sin cuenta)",
-        highContrastMode = false,
-        darkMode = false,
-        locationSharingEnabled = false,
-      )
-    )
-  private val _demoChannels = MutableStateFlow(createInitialDemoChannels(currentUserId))
-  private val _demoMessagesByChannel = MutableStateFlow(createInitialDemoMessages(currentUserId))
-  private val _demoMarkersByChannel = MutableStateFlow(createInitialDemoMarkers(currentUserId))
+  private val _fieldAlertsHistory = MutableStateFlow<List<FieldAlertItem>>(emptyList())
+  val fieldAlertsHistory: StateFlow<List<FieldAlertItem>> = _fieldAlertsHistory.asStateFlow()
+
+  private val _workspaceAccessToken = MutableStateFlow<String?>(null)
+  private val _workspaceState = MutableStateFlow(WorkspaceUiState())
+  val workspaceState: StateFlow<WorkspaceUiState> = _workspaceState.asStateFlow()
+
+  private val _pendingWorkspaceConsent = MutableSharedFlow<IntentSender>(extraBufferCapacity = 2)
+  val pendingWorkspaceConsent: SharedFlow<IntentSender> = _pendingWorkspaceConsent.asSharedFlow()
+
   private val _demoPresenceByChannel = MutableStateFlow<Map<String, List<ChannelPresence>>>(emptyMap())
+
+  // Tracks IDs already seen per channel so we only notify on genuinely new remote alerts
+  private var alertBaselineChannelId: String? = null
+  private val seenMarkerIds = mutableSetOf<String>()
+  private val seenMessageIds = mutableSetOf<String>()
+  private var markersInitializedForChannel = false
+  private var messagesInitializedForChannel = false
 
   val userProfile: StateFlow<UserProfile?> =
     if (isDemoMode || repository == null) {
-      _demoProfile.asStateFlow()
+      (demoLocalRepository?.observeProfile() ?: flowOf(null))
+        .stateIn(
+          scope = viewModelScope,
+          started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+          initialValue =
+            UserProfile(
+              id = currentUserId,
+              userId = currentUserId,
+              displayName = "Explorador Local",
+              roleTitle = "Modo Prueba Persistente",
+            ),
+        )
     } else {
       repository
         .observeUserProfile(currentUserId)
@@ -139,16 +186,14 @@ class GeoNexoViewModel(
 
   val channelsState: StateFlow<UiState<SyncedCollection<Channel>>> =
     if (isDemoMode || repository == null) {
-      _demoChannels
+      (demoLocalRepository?.observeChannels() ?: flowOf(emptyList()))
         .map<List<Channel>, UiState<SyncedCollection<Channel>>> { items ->
           UiState.Success(SyncedCollection(items = items, hasPendingWrites = false, fromCache = true))
         }
         .stateIn(
           scope = viewModelScope,
           started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-          initialValue = UiState.Success(
-            SyncedCollection(items = _demoChannels.value, hasPendingWrites = false, fromCache = true)
-          ),
+          initialValue = UiState.Loading,
         )
     } else {
       repository
@@ -169,70 +214,77 @@ class GeoNexoViewModel(
       .stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-        initialValue = if (isDemoMode) _demoChannels.value.firstOrNull() else null,
+        initialValue = null,
       )
 
   val messagesState: StateFlow<UiState<SyncedCollection<ChannelMessage>>> =
-    if (isDemoMode || repository == null) {
-      combine(activeChannel, _demoMessagesByChannel) { ch, map ->
-          val list = if (ch == null) emptyList() else map[ch.id].orEmpty()
-          UiState.Success(SyncedCollection(list, hasPendingWrites = false, fromCache = true))
-        }
-        .stateIn(
-          scope = viewModelScope,
-          started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-          initialValue = UiState.Loading,
-        )
-    } else {
-      activeChannel
-        .flatMapLatest { ch ->
-          if (ch == null) {
-            flowOf(
-              UiState.Success(
-                SyncedCollection(emptyList(), hasPendingWrites = false, fromCache = false)
-              )
+    combine(activeChannel, _messagePageLimit) { ch, limit -> Pair(ch, limit) }
+      .flatMapLatest { (ch, limit) ->
+        if (ch == null) {
+          flowOf(
+            UiState.Success(
+              SyncedCollection(emptyList(), hasPendingWrites = false, fromCache = isDemoMode)
             )
-          } else {
-            repository.observeMessages(ch.id, currentUserId).asUiState("Error al cargar mensajes")
-          }
+          )
+        } else if (isDemoMode || repository == null) {
+          (demoLocalRepository?.observeMessages(ch.id) ?: flowOf(emptyList()))
+            .map<List<ChannelMessage>, UiState<SyncedCollection<ChannelMessage>>> { list ->
+              val paged = if (list.size > limit) list.takeLast(limit) else list
+              UiState.Success(SyncedCollection(paged, hasPendingWrites = false, fromCache = true))
+            }
+        } else {
+          repository.observeMessages(ch.id, currentUserId, limit).asUiState("Error al cargar mensajes")
         }
-        .stateIn(
-          scope = viewModelScope,
-          started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-          initialValue = UiState.Loading,
-        )
-    }
+      }
+      .stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+        initialValue = UiState.Loading,
+      )
 
   val markersState: StateFlow<UiState<SyncedCollection<GeoMarker>>> =
-    if (isDemoMode || repository == null) {
-      combine(activeChannel, _demoMarkersByChannel) { ch, map ->
-          val list = if (ch == null) emptyList() else map[ch.id].orEmpty()
-          UiState.Success(SyncedCollection(list, hasPendingWrites = false, fromCache = true))
-        }
-        .stateIn(
-          scope = viewModelScope,
-          started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-          initialValue = UiState.Loading,
-        )
-    } else {
-      activeChannel
-        .flatMapLatest { ch ->
-          if (ch == null) {
-            flowOf(
-              UiState.Success(
-                SyncedCollection(emptyList(), hasPendingWrites = false, fromCache = false)
-              )
+    activeChannel
+      .flatMapLatest { ch ->
+        if (ch == null) {
+          flowOf(
+            UiState.Success(
+              SyncedCollection(emptyList(), hasPendingWrites = false, fromCache = isDemoMode)
             )
-          } else {
-            repository.observeMarkers(ch.id, currentUserId).asUiState("Error al cargar marcadores")
+          )
+        } else if (isDemoMode || repository == null) {
+          (demoLocalRepository?.observeMarkers(ch.id) ?: flowOf(emptyList()))
+            .map<List<GeoMarker>, UiState<SyncedCollection<GeoMarker>>> { list ->
+              UiState.Success(SyncedCollection(list, hasPendingWrites = false, fromCache = true))
+            }
+        } else {
+          repository.observeMarkers(ch.id, currentUserId).asUiState("Error al cargar marcadores")
+        }
+      }
+      .stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+        initialValue = UiState.Loading,
+      )
+
+  val docRevisions: StateFlow<List<DocRevision>> =
+    activeChannel
+      .flatMapLatest { ch ->
+        if (ch == null) {
+          flowOf(emptyList())
+        } else if (isDemoMode || repository == null) {
+          demoLocalRepository?.observeDocRevisions(ch.id) ?: flowOf(emptyList())
+        } else {
+          repository.observeDocRevisions(ch.id, currentUserId).catch { error ->
+            unwrapFirestoreError(error)?.let { Log.w(TAG, "Error observing revisions", it) }
+            emit(emptyList())
           }
         }
-        .stateIn(
-          scope = viewModelScope,
-          started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-          initialValue = UiState.Loading,
-        )
-    }
+      }
+      .stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+        initialValue = emptyList(),
+      )
 
   val presenceList: StateFlow<List<ChannelPresence>> =
     if (isDemoMode || repository == null) {
@@ -249,10 +301,13 @@ class GeoNexoViewModel(
         .flatMapLatest { ch ->
           if (ch == null) flowOf(emptyList())
           else
-            repository.observePresence(ch.id, currentUserId).catch { error ->
-              unwrapFirestoreError(error)?.let { Log.w(TAG, "Error observing presence", it) }
-              emit(emptyList())
-            }
+            repository
+              .observePresence(ch.id, currentUserId)
+              .map { list -> list.filter { it.sharingActive && it.userId in ch.memberUids } }
+              .catch { error ->
+                unwrapFirestoreError(error)?.let { Log.w(TAG, "Error observing presence", it) }
+                emit(emptyList())
+              }
         }
         .stateIn(
           scope = viewModelScope,
@@ -262,8 +317,129 @@ class GeoNexoViewModel(
     }
 
   init {
-    if (!isDemoMode) {
+    if (isDemoMode) {
+      viewModelScope.launch { demoLocalRepository?.ensureSeeded() }
+    } else {
       bootstrapWorkspace()
+    }
+    observeRemoteAlerts()
+  }
+
+  private fun observeRemoteAlerts() {
+    viewModelScope.launch {
+      activeChannel.collect { ch ->
+        if (ch?.id != alertBaselineChannelId) {
+          alertBaselineChannelId = ch?.id
+          seenMarkerIds.clear()
+          seenMessageIds.clear()
+          markersInitializedForChannel = false
+          messagesInitializedForChannel = false
+        }
+      }
+    }
+    viewModelScope.launch {
+      markersState.collect { state ->
+        val ch = activeChannel.value ?: return@collect
+        if (ch.id != alertBaselineChannelId) return@collect
+        val list = (state as? UiState.Success)?.data?.items ?: return@collect
+        if (!markersInitializedForChannel) {
+          seenMarkerIds.addAll(list.map { it.id })
+          markersInitializedForChannel = true
+          return@collect
+        }
+        val newlyAdded = list.filter { it.id !in seenMarkerIds }
+        seenMarkerIds.addAll(newlyAdded.map { it.id })
+        if (isDemoMode) return@collect
+        newlyAdded
+          .filter { it.creatorId != currentUserId && it.resolvedCategory() == MarkerCategory.INCIDENT }
+          .forEach { incident ->
+            val title = "Incidencia en #${ch.name}"
+            val body = "${incident.updatedByName}: ${incident.title}"
+            appendAlertHistory(
+              FieldAlertItem(
+                id = "mk_${incident.id}",
+                channelId = ch.id,
+                channelName = ch.name,
+                title = title,
+                body = body,
+                markerId = incident.id,
+                timestampMillis = System.currentTimeMillis(),
+              )
+            )
+            if (_fieldAlertsEnabled.value) {
+              FieldMediaAndAlerts.showFieldAlertNotification(
+                context = appContext,
+                notificationId = incident.id.hashCode(),
+                title = title,
+                body = body,
+              )
+            }
+          }
+      }
+    }
+    viewModelScope.launch {
+      messagesState.collect { state ->
+        val ch = activeChannel.value ?: return@collect
+        if (ch.id != alertBaselineChannelId) return@collect
+        val list = (state as? UiState.Success)?.data?.items ?: return@collect
+        if (!messagesInitializedForChannel) {
+          seenMessageIds.addAll(list.map { it.id })
+          messagesInitializedForChannel = true
+          return@collect
+        }
+        val newlyAdded = list.filter { it.id !in seenMessageIds }
+        seenMessageIds.addAll(newlyAdded.map { it.id })
+        if (isDemoMode) return@collect
+        newlyAdded
+          .filter { it.senderId != currentUserId && !it.linkedMarkerId.isNullOrBlank() }
+          .forEach { msg ->
+            val title = "#${ch.name} · ${msg.senderName}"
+            val body = "${msg.linkedMarkerTitle ?: "Punto"}: ${msg.body}"
+            appendAlertHistory(
+              FieldAlertItem(
+                id = "msg_${msg.id}",
+                channelId = ch.id,
+                channelName = ch.name,
+                title = title,
+                body = body,
+                markerId = msg.linkedMarkerId,
+                timestampMillis = System.currentTimeMillis(),
+              )
+            )
+            if (_fieldAlertsEnabled.value) {
+              FieldMediaAndAlerts.showFieldAlertNotification(
+                context = appContext,
+                notificationId = msg.id.hashCode(),
+                title = title,
+                body = body,
+              )
+            }
+          }
+      }
+    }
+  }
+
+  private fun appendAlertHistory(alert: FieldAlertItem) {
+    _fieldAlertsHistory.update { existing ->
+      if (existing.any { it.id == alert.id }) existing
+      else (listOf(alert) + existing).take(25)
+    }
+  }
+
+  fun markAllAlertsRead() {
+    _fieldAlertsHistory.update { list -> list.map { it.copy(unread = false) } }
+  }
+
+  fun openAlertTarget(alert: FieldAlertItem) {
+    _fieldAlertsHistory.update { list ->
+      list.map { if (it.id == alert.id) it.copy(unread = false) else it }
+    }
+    _selectedChannelId.value = alert.channelId
+    if (!alert.markerId.isNullOrBlank()) {
+      _focusedMarkerId.value = alert.markerId
+      _activeTab.value = WorkspaceTab.MAP
+    } else {
+      _activeTab.value = WorkspaceTab.CHAT
     }
   }
 
@@ -286,9 +462,14 @@ class GeoNexoViewModel(
     _selectedChannelId.value = channelId
     _activeThreadParentId.value = null
     _focusedMarkerId.value = null
+    _messagePageLimit.value = INITIAL_MESSAGE_PAGE_SIZE
     if (navigateToChat) {
       _activeTab.value = WorkspaceTab.CHAT
     }
+  }
+
+  fun loadOlderMessages() {
+    _messagePageLimit.update { (it + INITIAL_MESSAGE_PAGE_SIZE).coerceAtMost(300) }
   }
 
   fun openMarkerOnMap(markerId: String) {
@@ -306,6 +487,10 @@ class GeoNexoViewModel(
 
   fun setSearchQuery(query: String) {
     _searchQuery.value = query
+  }
+
+  fun setFieldAlertsEnabled(enabled: Boolean) {
+    _fieldAlertsEnabled.value = enabled
   }
 
   fun dismissInviteDialog() {
@@ -335,6 +520,49 @@ class GeoNexoViewModel(
     }
   }
 
+  fun revokeInviteCode(channel: Channel) {
+    if (isDemoMode || repository == null) return
+    viewModelScope.launch {
+      _inviteActionLoading.value = true
+      val result = repository.revokeChannelInvite(channel)
+      _inviteActionLoading.value = false
+      result
+        .onSuccess { _snackbarEvents.emit("Código de invitación revocado") }
+        .onFailure { e ->
+          _snackbarEvents.emit(e.localizedMessage ?: "No se pudo revocar el código.")
+        }
+    }
+  }
+
+  fun removeMember(channel: Channel, targetUid: String) {
+    if (isDemoMode || repository == null) return
+    viewModelScope.launch {
+      val result = repository.removeChannelMember(channel, targetUid)
+      result
+        .onSuccess { _snackbarEvents.emit("Miembro retirado del canal") }
+        .onFailure { e ->
+          _snackbarEvents.emit(e.localizedMessage ?: "No se pudo retirar al miembro.")
+        }
+    }
+  }
+
+  fun leaveChannel(channel: Channel) {
+    if (isDemoMode || repository == null) return
+    viewModelScope.launch {
+      val result = repository.leaveChannel(channel)
+      result
+        .onSuccess {
+          if (_selectedChannelId.value == channel.id) {
+            _selectedChannelId.value = null
+          }
+          _snackbarEvents.emit("Saliste de #${channel.name}")
+        }
+        .onFailure { e ->
+          _snackbarEvents.emit(e.localizedMessage ?: "No pudiste salir del canal.")
+        }
+    }
+  }
+
   fun joinChannelByCode(code: String, onSuccess: () -> Unit = {}) {
     if (isDemoMode || repository == null) {
       viewModelScope.launch {
@@ -351,6 +579,7 @@ class GeoNexoViewModel(
       result
         .onSuccess { (channelId, channelName) ->
           _selectedChannelId.value = channelId
+          _messagePageLimit.value = INITIAL_MESSAGE_PAGE_SIZE
           _activeTab.value = WorkspaceTab.CHAT
           _snackbarEvents.emit("Conectado al canal #$channelName")
           onSuccess()
@@ -366,7 +595,7 @@ class GeoNexoViewModel(
       _offlineNetworkDisabled.value = enableOffline
       viewModelScope.launch {
         _snackbarEvents.emit(
-          "Modo prueba local: todos tus cambios se guardan localmente en memoria."
+          "Modo prueba persistente: tus cambios se guardan en SQLite local."
         )
       }
       return
@@ -396,25 +625,13 @@ class GeoNexoViewModel(
     val cleanTopic = topic.trim().take(160)
 
     if (isDemoMode || repository == null) {
-      val newId = "demo_ch_${UUID.randomUUID().toString().take(8)}"
-      val newChannel =
-        Channel(
-          id = newId,
-          ownerId = currentUserId,
-          memberUids = listOf(currentUserId),
-          name = cleanName,
-          topic = cleanTopic,
-          channelType = type.name,
-          pinnedDocTitle = "Bitácora — $cleanName",
-          pinnedDocBody = "Notas operativas iniciales del canal #$cleanName.",
-          pinnedDocUpdatedBy = _demoProfile.value.displayName,
-          createdAt = Timestamp.now(),
-          updatedAt = Timestamp.now(),
-        )
-      _demoChannels.update { listOf(newChannel) + it }
-      _selectedChannelId.value = newId
-      _activeTab.value = WorkspaceTab.CHAT
-      viewModelScope.launch { _snackbarEvents.emit("Canal #$cleanName creado (prueba local)") }
+      viewModelScope.launch {
+        val newId = demoLocalRepository?.createChannel(cleanName, cleanTopic, type) ?: return@launch
+        _selectedChannelId.value = newId
+        _messagePageLimit.value = INITIAL_MESSAGE_PAGE_SIZE
+        _activeTab.value = WorkspaceTab.CHAT
+        _snackbarEvents.emit("Canal #$cleanName guardado en dispositivo")
+      }
       return
     }
 
@@ -423,6 +640,7 @@ class GeoNexoViewModel(
       result
         .onSuccess { newId ->
           _selectedChannelId.value = newId
+          _messagePageLimit.value = INITIAL_MESSAGE_PAGE_SIZE
           _activeTab.value = WorkspaceTab.CHAT
           _snackbarEvents.emit("Canal #$name creado")
         }
@@ -438,55 +656,434 @@ class GeoNexoViewModel(
     linkedMarker: GeoMarker? = null,
     attachmentLabel: String? = null,
     attachmentUri: String? = null,
+    attachmentSnippet: String? = null,
   ) {
     val channel = activeChannel.value ?: return
     val cleanBody = body.trim().take(2000)
     if (cleanBody.isEmpty()) return
 
-    if (isDemoMode || repository == null) {
-      val messageType =
-        when {
-          linkedMarker != null -> MessageType.GEO_PIN
-          !attachmentLabel.isNullOrBlank() -> MessageType.PHOTO
-          else -> MessageType.TEXT
-        }
-      val msg =
-        ChannelMessage(
-          id = "demo_msg_${UUID.randomUUID().toString().take(8)}",
-          channelId = channel.id,
-          senderId = currentUserId,
-          senderName = _demoProfile.value.displayName,
-          memberUids = listOf(currentUserId),
-          body = cleanBody,
-          parentMessageId = parentMessageId?.takeIf { it.isNotBlank() },
-          linkedMarkerId = linkedMarker?.id?.takeIf { it.isNotBlank() },
-          linkedMarkerTitle = linkedMarker?.title?.take(80)?.takeIf { it.isNotBlank() },
-          attachmentLabel = attachmentLabel?.take(120)?.takeIf { it.isNotBlank() },
-          attachmentUri = attachmentUri?.take(500)?.takeIf { it.isNotBlank() },
-          messageType = messageType.name,
-          createdAt = Timestamp.now(),
-          updatedAt = Timestamp.now(),
-        )
-      _demoMessagesByChannel.update { map ->
-        val current = map[channel.id].orEmpty()
-        map + (channel.id to (current + msg))
-      }
-      return
-    }
-
     viewModelScope.launch {
+      val trimmedUri = attachmentUri?.trim()?.takeIf { it.isNotBlank() }
+      val isGoogleDocUri =
+        trimmedUri != null && GoogleWorkspaceManager.isValidGoogleWorkspaceUrl(trimmedUri)
+
+      if (trimmedUri != null && trimmedUri.startsWith("https://") && !isGoogleDocUri) {
+        _snackbarEvents.emit(
+          "Por seguridad solo se permiten enlaces oficiales de docs.google.com o drive.google.com."
+        )
+        return@launch
+      }
+
+      val compressedBase64 =
+        if (trimmedUri != null && !isGoogleDocUri) {
+          runCatching { FieldMediaAndAlerts.compressImageToBase64(appContext, Uri.parse(trimmedUri)) }
+            .getOrNull()
+        } else {
+          null
+        }
+
+      if (trimmedUri != null && !isGoogleDocUri && compressedBase64 == null) {
+        _snackbarEvents.emit(
+          "No se pudo procesar o comprimir la foto seleccionada. Intenta con otra imagen."
+        )
+        return@launch
+      }
+
+      // Best-effort live snippet enrichment if attaching a Google Doc while authorized
+      var resolvedLabel = attachmentLabel
+      var resolvedSnippet = attachmentSnippet
+      if (isGoogleDocUri && resolvedSnippet.isNullOrBlank()) {
+        val token = _workspaceAccessToken.value
+        val docId = GoogleWorkspaceManager.extractGoogleDocId(trimmedUri!!)
+        if (token != null && docId != null) {
+          GoogleWorkspaceManager.fetchDocTextAndMeta(token, docId).onSuccess { (_, summary) ->
+            if (resolvedLabel.isNullOrBlank()) resolvedLabel = summary.title
+            resolvedSnippet = summary.snippet
+          }
+        }
+      }
+
+      if (isDemoMode || repository == null) {
+        demoLocalRepository?.insertMessage(
+          channelId = channel.id,
+          body = cleanBody,
+          parentMessageId = parentMessageId,
+          linkedMarker = linkedMarker,
+          attachmentLabel = resolvedLabel,
+          attachmentUri = if (isGoogleDocUri) trimmedUri else trimmedUri,
+          attachmentSnippet = resolvedSnippet,
+          attachmentData = compressedBase64,
+        )
+        return@launch
+      }
+
+      // Never transmit device-local content:// URIs to Firestore; share compressed attachmentData or validated Google Doc URL
       val result =
         repository.sendMessage(
           channel = channel,
-          body = body,
+          body = cleanBody,
           parentMessageId = parentMessageId,
           linkedMarker = linkedMarker,
-          attachmentLabel = attachmentLabel,
-          attachmentUri = attachmentUri,
+          attachmentLabel = resolvedLabel,
+          attachmentUri = if (isGoogleDocUri) trimmedUri else null,
+          attachmentSnippet = resolvedSnippet,
+          attachmentData = compressedBase64,
         )
       result.onFailure { e ->
         _snackbarEvents.emit(e.localizedMessage ?: "No se pudo enviar el mensaje")
       }
+    }
+  }
+
+  fun requestWorkspaceAuthAndLoadDocs(queryFilter: String = "") {
+    if (isDemoMode || repository == null) {
+      _workspaceState.update {
+        it.copy(
+          isAuthorized = false,
+          isLoading = false,
+          errorMessage = "Inicia sesión con Google para explorar tus documentos de Drive y Docs.",
+        )
+      }
+      return
+    }
+    viewModelScope.launch {
+      _workspaceState.update { it.copy(isLoading = true, errorMessage = null) }
+      val cachedToken = _workspaceAccessToken.value
+      if (cachedToken != null) {
+        loadDocsWithToken(cachedToken, queryFilter)
+        return@launch
+      }
+      when (val authRes = GoogleWorkspaceManager.authorize(appContext)) {
+        is WorkspaceAuthResult.Authorized -> {
+          _workspaceAccessToken.value = authRes.accessToken
+          _workspaceState.update { it.copy(isAuthorized = true) }
+          loadDocsWithToken(authRes.accessToken, queryFilter)
+        }
+        is WorkspaceAuthResult.NeedsConsent -> {
+          _workspaceState.update { it.copy(isLoading = false) }
+          _pendingWorkspaceConsent.emit(authRes.intentSender)
+        }
+        is WorkspaceAuthResult.Error -> {
+          _workspaceState.update {
+            it.copy(isAuthorized = false, isLoading = false, errorMessage = authRes.message)
+          }
+        }
+      }
+    }
+  }
+
+  fun onWorkspaceConsentCompleted(data: Intent?, queryFilter: String = "") {
+    val tokenResult = GoogleWorkspaceManager.extractTokenFromIntent(appContext, data)
+    tokenResult
+      .onSuccess { token ->
+        _workspaceAccessToken.value = token
+        _workspaceState.update { it.copy(isAuthorized = true, errorMessage = null) }
+        viewModelScope.launch { loadDocsWithToken(token, queryFilter) }
+      }
+      .onFailure { err ->
+        _workspaceState.update {
+          it.copy(
+            isAuthorized = false,
+            isLoading = false,
+            errorMessage = err.localizedMessage ?: "Autorización de Google Docs cancelada.",
+          )
+        }
+      }
+  }
+
+  private suspend fun loadDocsWithToken(token: String, queryFilter: String) {
+    _workspaceState.update { it.copy(isLoading = true, errorMessage = null) }
+    val res = GoogleWorkspaceManager.listGoogleDocs(token, queryFilter)
+    res
+      .onSuccess { docs ->
+        _workspaceState.update {
+          it.copy(isAuthorized = true, isLoading = false, docs = docs, errorMessage = null)
+        }
+      }
+      .onFailure { err ->
+        if (err is WorkspaceUnauthorizedException) {
+          _workspaceAccessToken.value = null
+          _workspaceState.update {
+            it.copy(
+              isAuthorized = false,
+              isLoading = false,
+              errorMessage = err.localizedMessage,
+            )
+          }
+        } else {
+          _workspaceState.update {
+            it.copy(
+              isLoading = false,
+              errorMessage = err.localizedMessage ?: "No se pudieron cargar tus Google Docs.",
+            )
+          }
+        }
+      }
+  }
+
+  fun linkGoogleDocToMarker(marker: GeoMarker, doc: GoogleDocSummary) {
+    val channel = activeChannel.value ?: return
+    val safeUri = GoogleWorkspaceManager.canonicalDocUrl(doc.id, doc.webViewLink)
+    if (!GoogleWorkspaceManager.isValidGoogleWorkspaceUrl(safeUri)) {
+      viewModelScope.launch {
+        _snackbarEvents.emit("Solo se permiten URLs oficiales de docs.google.com o drive.google.com.")
+      }
+      return
+    }
+    viewModelScope.launch {
+      var snippet = doc.snippet
+      if (snippet.isNullOrBlank() && doc.id.isNotBlank()) {
+        val token = _workspaceAccessToken.value
+        if (token != null) {
+          GoogleWorkspaceManager.fetchDocTextAndMeta(token, doc.id).onSuccess { (_, summary) ->
+            snippet = summary.snippet
+          }
+        }
+      }
+      if (isDemoMode || repository == null) {
+        demoLocalRepository?.linkDocToMarker(
+          channelId = channel.id,
+          marker = marker,
+          docId = doc.id.takeIf { it.isNotBlank() },
+          docTitle = doc.title,
+          docUri = safeUri,
+          docSnippet = snippet,
+        )
+        _snackbarEvents.emit("Google Doc vinculado a \"${marker.title}\"")
+        return@launch
+      }
+      repository
+        .linkDocToMarker(
+          channelId = channel.id,
+          markerId = marker.id,
+          docId = doc.id.takeIf { it.isNotBlank() },
+          docTitle = doc.title,
+          docUri = safeUri,
+          docSnippet = snippet,
+        )
+        .onSuccess { _snackbarEvents.emit("Google Doc vinculado a \"${marker.title}\"") }
+        .onFailure { e ->
+          _snackbarEvents.emit(e.localizedMessage ?: "No se pudo vincular el documento al marcador.")
+        }
+    }
+  }
+
+  fun unlinkGoogleDocFromMarker(marker: GeoMarker) {
+    val channel = activeChannel.value ?: return
+    viewModelScope.launch {
+      if (isDemoMode || repository == null) {
+        demoLocalRepository?.linkDocToMarker(
+          channelId = channel.id,
+          marker = marker,
+          docId = null,
+          docTitle = null,
+          docUri = null,
+          docSnippet = null,
+        )
+        _snackbarEvents.emit("Documento desvinculado")
+        return@launch
+      }
+      repository
+        .linkDocToMarker(
+          channelId = channel.id,
+          markerId = marker.id,
+          docId = null,
+          docTitle = null,
+          docUri = null,
+          docSnippet = null,
+        )
+        .onSuccess { _snackbarEvents.emit("Documento desvinculado del marcador") }
+        .onFailure { e ->
+          _snackbarEvents.emit(e.localizedMessage ?: "No se pudo desvincular el documento.")
+        }
+    }
+  }
+
+  fun createAndShareGoogleDoc(
+    title: String,
+    bodyText: String,
+    targetMarker: GeoMarker? = null,
+    postToChat: Boolean = true,
+    onCreated: (GoogleDocSummary) -> Unit = {},
+  ) {
+    val channel = activeChannel.value ?: return
+    if (isDemoMode || repository == null) {
+      viewModelScope.launch {
+        _snackbarEvents.emit(
+          "Inicia sesión con Google para crear documentos reales en Google Docs/Drive."
+        )
+      }
+      return
+    }
+    viewModelScope.launch {
+      _workspaceState.update { it.copy(isLoading = true, errorMessage = null) }
+      val token = _workspaceAccessToken.value
+      val resolvedToken =
+        if (token != null) token
+        else {
+          when (val authRes = GoogleWorkspaceManager.authorize(appContext)) {
+            is WorkspaceAuthResult.Authorized -> {
+              _workspaceAccessToken.value = authRes.accessToken
+              _workspaceState.update { it.copy(isAuthorized = true) }
+              authRes.accessToken
+            }
+            is WorkspaceAuthResult.NeedsConsent -> {
+              _workspaceState.update { it.copy(isLoading = false) }
+              _pendingWorkspaceConsent.emit(authRes.intentSender)
+              _snackbarEvents.emit("Autoriza Google Docs y vuelve a pulsar para crear el documento.")
+              return@launch
+            }
+            is WorkspaceAuthResult.Error -> {
+              _workspaceState.update { it.copy(isLoading = false, errorMessage = authRes.message) }
+              _snackbarEvents.emit(authRes.message)
+              return@launch
+            }
+          }
+        }
+
+      val result =
+        GoogleWorkspaceManager.createAndShareGoogleDoc(
+          accessToken = resolvedToken,
+          title = title,
+          bodyText = bodyText,
+          makeAnyoneReader = true,
+        )
+      _workspaceState.update { it.copy(isLoading = false) }
+
+      result
+        .onSuccess { doc ->
+          _workspaceState.update { state -> state.copy(docs = listOf(doc) + state.docs) }
+          if (targetMarker != null) {
+            repository.linkDocToMarker(
+              channelId = channel.id,
+              markerId = targetMarker.id,
+              docId = doc.id,
+              docTitle = doc.title,
+              docUri = doc.webViewLink,
+              docSnippet = doc.snippet,
+            )
+          }
+          if (postToChat) {
+            repository.sendMessage(
+              channel = channel,
+              body =
+                if (targetMarker != null)
+                  "Nuevo Google Doc vinculado al marcador #${targetMarker.title}: ${doc.title}"
+                else "Nuevo documento compartido desde GeoNexo: ${doc.title}",
+              linkedMarker = targetMarker,
+              attachmentLabel = doc.title,
+              attachmentUri = doc.webViewLink,
+              attachmentSnippet = doc.snippet,
+            )
+          }
+          val shareMsg =
+            if (doc.shared) "Google Doc creado y compartido con enlace de lectura."
+            else "Google Doc creado (verifica permisos de acceso en Drive para tu equipo)."
+          _snackbarEvents.emit(shareMsg)
+          onCreated(doc)
+        }
+        .onFailure { err ->
+          if (err is WorkspaceUnauthorizedException) {
+            _workspaceAccessToken.value = null
+            _workspaceState.update { it.copy(isAuthorized = false) }
+          }
+          _snackbarEvents.emit(err.localizedMessage ?: "No se pudo crear el Google Doc.")
+        }
+    }
+  }
+
+  fun exportBitacoraToGoogleDoc(channel: Channel, markers: List<GeoMarker>) {
+    val reportBody =
+      buildString {
+        append("Canal operativo: #").append(channel.name).append('\n')
+        if (channel.topic.isNotBlank()) {
+          append("Objetivo: ").append(channel.topic).append('\n')
+        }
+        append("Revisión local: ").append(channel.pinnedDocRevision).append('\n')
+        append("Última actualización por: ").append(channel.pinnedDocUpdatedBy).append("\n\n")
+        append(channel.pinnedDocBody.ifBlank { "Sin notas en bitácora." }).append("\n\n")
+        if (markers.isNotEmpty()) {
+          append("--- Marcadores activos en mapa (").append(markers.size).append(") ---\n")
+          markers.forEach { mk ->
+            append("• ").append(mk.title)
+              .append(" [").append(mk.resolvedCategory().labelEs)
+              .append(" · ").append(mk.resolvedStatus().labelEs).append("]")
+              .append(" GPS(").append(String.format("%.5f", mk.lat))
+              .append(", ").append(String.format("%.5f", mk.lng)).append(")\n")
+            if (mk.notes.isNotBlank()) {
+              append("  Notas: ").append(mk.notes).append('\n')
+            }
+          }
+        }
+      }
+    createAndShareGoogleDoc(
+      title = channel.pinnedDocTitle.ifBlank { "Bitácora #${channel.name}" },
+      bodyText = reportBody,
+      targetMarker = null,
+      postToChat = true,
+    )
+  }
+
+  fun fetchGoogleDocContentForGemini(
+    docTitle: String,
+    docUri: String,
+    cachedSnippet: String?,
+    onContentReady: (resolvedTitle: String, resolvedUri: String, contentText: String) -> Unit,
+  ) {
+    val docId = GoogleWorkspaceManager.extractGoogleDocId(docUri)
+    if (isDemoMode || repository == null || docId == null) {
+      onContentReady(
+        docTitle,
+        docUri,
+        cachedSnippet?.takeIf { it.isNotBlank() }
+          ?: "Documento enlazado ($docUri). Sin lectura API directa disponible en modo local.",
+      )
+      return
+    }
+    viewModelScope.launch {
+      var token = _workspaceAccessToken.value
+      if (token == null) {
+        when (val authRes = GoogleWorkspaceManager.authorize(appContext)) {
+          is WorkspaceAuthResult.Authorized -> {
+            token = authRes.accessToken
+            _workspaceAccessToken.value = token
+            _workspaceState.update { it.copy(isAuthorized = true) }
+          }
+          is WorkspaceAuthResult.NeedsConsent -> {
+            // Fall back to cached snippet immediately if available, and also inform user
+            if (!cachedSnippet.isNullOrBlank()) {
+              _snackbarEvents.emit("Analizando extracto guardado. Autoriza Drive para lectura completa.")
+              onContentReady(docTitle, docUri, cachedSnippet)
+            } else {
+              _pendingWorkspaceConsent.emit(authRes.intentSender)
+              _snackbarEvents.emit("Autoriza lectura de Google Docs/Drive para analizar el contenido completo.")
+            }
+            return@launch
+          }
+          is WorkspaceAuthResult.Error -> {
+            onContentReady(docTitle, docUri, cachedSnippet ?: "")
+            return@launch
+          }
+        }
+      }
+
+      val fetchResult = GoogleWorkspaceManager.fetchDocTextAndMeta(token!!, docId)
+      fetchResult
+        .onSuccess { (fullText, summary) ->
+          onContentReady(summary.title, summary.webViewLink, fullText)
+        }
+        .onFailure { err ->
+          if (err is WorkspaceUnauthorizedException) {
+            _workspaceAccessToken.value = null
+            _workspaceState.update { it.copy(isAuthorized = false) }
+          }
+          if (!cachedSnippet.isNullOrBlank()) {
+            _snackbarEvents.emit("${err.localizedMessage} Usando extracto en caché.")
+            onContentReady(docTitle, docUri, cachedSnippet)
+          } else {
+            _snackbarEvents.emit(err.localizedMessage ?: "No se pudo leer el Google Doc.")
+          }
+        }
     }
   }
 
@@ -495,42 +1092,47 @@ class GeoNexoViewModel(
     notes: String,
     category: MarkerCategory,
     status: MarkerStatus,
-    mapX: Double,
-    mapY: Double,
+    mapX: Double = 0.5,
+    mapY: Double = 0.5,
+    lat: Double? = null,
+    lng: Double? = null,
   ) {
     val channel = activeChannel.value ?: return
     val cleanTitle = title.trim().take(80)
     if (cleanTitle.length < 2) return
     val baseCoords = _lastKnownCoords.value
-    val lat = (baseCoords.first + (0.5 - mapY) * 0.02).coerceIn(-90.0, 90.0)
-    val lng = (baseCoords.second + (mapX - 0.5) * 0.02).coerceIn(-180.0, 180.0)
+    val finalLat = (lat ?: (baseCoords.first + (0.5 - mapY) * 0.02)).coerceIn(-90.0, 90.0)
+    val finalLng = (lng ?: (baseCoords.second + (mapX - 0.5) * 0.02)).coerceIn(-180.0, 180.0)
+    val finalMapX =
+      if (lat != null && lng != null) {
+        (0.5 + (lng - baseCoords.second) / 0.02).coerceIn(0.05, 0.95)
+      } else {
+        mapX.coerceIn(0.0, 1.0)
+      }
+    val finalMapY =
+      if (lat != null && lng != null) {
+        (0.5 - (lat - baseCoords.first) / 0.02).coerceIn(0.05, 0.95)
+      } else {
+        mapY.coerceIn(0.0, 1.0)
+      }
 
     if (isDemoMode || repository == null) {
-      val markerId = "demo_mk_${UUID.randomUUID().toString().take(8)}"
-      val mk =
-        GeoMarker(
-          id = markerId,
-          channelId = channel.id,
-          creatorId = currentUserId,
-          updatedByName = _demoProfile.value.displayName,
-          memberUids = listOf(currentUserId),
-          title = cleanTitle,
-          notes = notes.trim().take(1000),
-          category = category.name,
-          status = status.name,
-          lat = lat,
-          lng = lng,
-          mapX = mapX.coerceIn(0.0, 1.0),
-          mapY = mapY.coerceIn(0.0, 1.0),
-          createdAt = Timestamp.now(),
-          updatedAt = Timestamp.now(),
-        )
-      _demoMarkersByChannel.update { map ->
-        val current = map[channel.id].orEmpty()
-        map + (channel.id to (listOf(mk) + current))
+      viewModelScope.launch {
+        val markerId =
+          demoLocalRepository?.createMarker(
+            channelId = channel.id,
+            title = cleanTitle,
+            notes = notes,
+            category = category,
+            status = status,
+            lat = finalLat,
+            lng = finalLng,
+            mapX = finalMapX,
+            mapY = finalMapY,
+          ) ?: return@launch
+        _focusedMarkerId.value = markerId
+        _snackbarEvents.emit("Marcador \"$cleanTitle\" guardado localmente")
       }
-      _focusedMarkerId.value = markerId
-      viewModelScope.launch { _snackbarEvents.emit("Marcador \"$cleanTitle\" guardado en modo prueba") }
       return
     }
 
@@ -538,19 +1140,19 @@ class GeoNexoViewModel(
       val result =
         repository.createMarker(
           channel = channel,
-          title = title,
+          title = cleanTitle,
           notes = notes,
           category = category,
           status = status,
-          lat = lat,
-          lng = lng,
-          mapX = mapX,
-          mapY = mapY,
+          lat = finalLat,
+          lng = finalLng,
+          mapX = finalMapX,
+          mapY = finalMapY,
         )
       result
         .onSuccess { markerId ->
           _focusedMarkerId.value = markerId
-          _snackbarEvents.emit("Marcador \"$title\" guardado en el mapa")
+          _snackbarEvents.emit("Marcador \"$cleanTitle\" guardado en el mapa")
         }
         .onFailure { e ->
           _snackbarEvents.emit(e.localizedMessage ?: "No se pudo guardar el marcador")
@@ -570,23 +1172,20 @@ class GeoNexoViewModel(
     if (cleanTitle.length < 2) return
 
     if (isDemoMode || repository == null) {
-      _demoMarkersByChannel.update { map ->
-        val updated =
-          map[channel.id].orEmpty().map { mk ->
-            if (mk.id == markerId) {
-              mk.copy(
-                title = cleanTitle,
-                notes = notes.trim().take(1000),
-                category = category.name,
-                status = status.name,
-                updatedByName = _demoProfile.value.displayName,
-                updatedAt = Timestamp.now(),
-              )
-            } else mk
-          }
-        map + (channel.id to updated)
+      val currentMarker =
+        (markersState.value as? UiState.Success)?.data?.items?.firstOrNull { it.id == markerId }
+          ?: return
+      viewModelScope.launch {
+        demoLocalRepository?.updateMarker(
+          channelId = channel.id,
+          marker = currentMarker,
+          title = cleanTitle,
+          notes = notes,
+          category = category,
+          status = status,
+        )
+        _snackbarEvents.emit("Marcador actualizado")
       }
-      viewModelScope.launch { _snackbarEvents.emit("Marcador actualizado") }
       return
     }
 
@@ -595,7 +1194,7 @@ class GeoNexoViewModel(
         repository.updateMarker(
           channelId = channel.id,
           markerId = markerId,
-          title = title,
+          title = cleanTitle,
           notes = notes,
           category = category,
           status = status,
@@ -610,12 +1209,11 @@ class GeoNexoViewModel(
     val channel = activeChannel.value ?: return
 
     if (isDemoMode || repository == null) {
-      _demoMarkersByChannel.update { map ->
-        val remaining = map[channel.id].orEmpty().filterNot { it.id == markerId }
-        map + (channel.id to remaining)
+      viewModelScope.launch {
+        demoLocalRepository?.deleteMarker(markerId)
+        if (_focusedMarkerId.value == markerId) _focusedMarkerId.value = null
+        _snackbarEvents.emit("Marcador eliminado")
       }
-      if (_focusedMarkerId.value == markerId) _focusedMarkerId.value = null
-      viewModelScope.launch { _snackbarEvents.emit("Marcador eliminado") }
       return
     }
 
@@ -636,28 +1234,23 @@ class GeoNexoViewModel(
     if (cleanTitle.isEmpty()) return
 
     if (isDemoMode || repository == null) {
-      _demoChannels.update { list ->
-        list.map { ch ->
-          if (ch.id == channel.id) {
-            ch.copy(
-              pinnedDocTitle = cleanTitle,
-              pinnedDocBody = body.take(12000),
-              pinnedDocUpdatedBy = _demoProfile.value.displayName,
-              updatedAt = Timestamp.now(),
-            )
-          } else ch
-        }
+      viewModelScope.launch {
+        demoLocalRepository?.updatePinnedDoc(channel, cleanTitle, body)
+        _snackbarEvents.emit("Bitácora e historial guardados localmente")
       }
-      viewModelScope.launch { _snackbarEvents.emit("Bitácora guardada localmente") }
       return
     }
 
     viewModelScope.launch {
-      val result = repository.updatePinnedDocument(channel.id, title, body)
+      val result = repository.updatePinnedDocument(channel, cleanTitle, body)
       result
-        .onSuccess { _snackbarEvents.emit("Bitácora del canal guardada") }
+        .onSuccess { _snackbarEvents.emit("Bitácora guardada (Rev. ${channel.pinnedDocRevision + 1})") }
         .onFailure { e -> _snackbarEvents.emit(e.localizedMessage ?: "Error al guardar bitácora") }
     }
+  }
+
+  fun restoreDocRevision(revision: DocRevision) {
+    updatePinnedDoc(title = revision.title, body = revision.body)
   }
 
   fun appendToPinnedDoc(sectionText: String) {
@@ -696,18 +1289,18 @@ class GeoNexoViewModel(
     highContrastMode: Boolean,
     darkMode: Boolean,
   ) {
+    val currentLocationEnabled =
+      userProfile.value?.locationSharingEnabled ?: _locationSharingRequested.value
     if (isDemoMode || repository == null) {
-      _demoProfile.update {
-        it.copy(
-          highContrastMode = highContrastMode,
+      viewModelScope.launch {
+        demoLocalRepository?.updatePreferences(
+          highContrast = highContrastMode,
           darkMode = darkMode,
-          updatedAt = Timestamp.now(),
+          locationSharing = currentLocationEnabled,
         )
       }
       return
     }
-    val currentLocationEnabled =
-      userProfile.value?.locationSharingEnabled ?: _locationSharingRequested.value
     viewModelScope.launch {
       repository
         .updateUserPreferences(
@@ -726,6 +1319,7 @@ class GeoNexoViewModel(
     lat: Double? = null,
     lng: Double? = null,
     accuracy: Double = 14.0,
+    silentUpdate: Boolean = false,
   ) {
     _locationSharingRequested.value = enabled
     if (lat != null && lng != null) {
@@ -733,45 +1327,51 @@ class GeoNexoViewModel(
     }
     val coords = _lastKnownCoords.value
     val channel = activeChannel.value
+    val profile = userProfile.value
 
     if (isDemoMode || repository == null) {
-      _demoProfile.update {
-        it.copy(locationSharingEnabled = enabled, updatedAt = Timestamp.now())
-      }
-      if (channel != null) {
-        val presence =
-          ChannelPresence(
-            id = currentUserId,
-            channelId = channel.id,
-            userId = currentUserId,
-            displayName = _demoProfile.value.displayName,
-            memberUids = listOf(currentUserId),
-            sharingActive = enabled,
-            lat = coords.first,
-            lng = coords.second,
-            mapX = 0.52,
-            mapY = 0.48,
-            accuracyMeters = accuracy,
-            updatedAt = Timestamp.now(),
-          )
-        _demoPresenceByChannel.update { map -> map + (channel.id to listOf(presence)) }
-      }
       viewModelScope.launch {
-        _snackbarEvents.emit(
-          if (enabled) "GPS local activado (solo visible en tu dispositivo)"
-          else "Ubicación pausada inmediatamente"
+        demoLocalRepository?.updatePreferences(
+          highContrast = profile?.highContrastMode ?: false,
+          darkMode = profile?.darkMode ?: false,
+          locationSharing = enabled,
         )
+        if (channel != null) {
+          val presence =
+            ChannelPresence(
+              id = currentUserId,
+              channelId = channel.id,
+              userId = currentUserId,
+              displayName = profile?.displayName ?: "Explorador Local",
+              memberUids = listOf(currentUserId),
+              sharingActive = enabled,
+              lat = coords.first,
+              lng = coords.second,
+              mapX = 0.52,
+              mapY = 0.48,
+              accuracyMeters = accuracy,
+              updatedAt = Timestamp.now(),
+            )
+          _demoPresenceByChannel.update { map -> map + (channel.id to listOf(presence)) }
+        }
+        if (!silentUpdate) {
+          _snackbarEvents.emit(
+            if (enabled) "GPS local activado (bajo consumo)"
+            else "Ubicación pausada inmediatamente"
+          )
+        }
       }
       return
     }
 
-    val profile = userProfile.value
     viewModelScope.launch {
-      repository.updateUserPreferences(
-        highContrastMode = profile?.highContrastMode ?: false,
-        darkMode = profile?.darkMode ?: false,
-        locationSharingEnabled = enabled,
-      )
+      if (!silentUpdate) {
+        repository.updateUserPreferences(
+          highContrastMode = profile?.highContrastMode ?: false,
+          darkMode = profile?.darkMode ?: false,
+          locationSharingEnabled = enabled,
+        )
+      }
       if (channel != null) {
         repository.updatePresence(
           channel = channel,
@@ -783,10 +1383,12 @@ class GeoNexoViewModel(
           accuracyMeters = accuracy,
         )
       }
-      _snackbarEvents.emit(
-        if (enabled) "Ubicación en vivo activada para este canal"
-        else "Ubicación pausada inmediatamente"
-      )
+      if (!silentUpdate) {
+        _snackbarEvents.emit(
+          if (enabled) "Ubicación en vivo activada para este canal"
+          else "Ubicación pausada inmediatamente"
+        )
+      }
     }
   }
 
@@ -807,170 +1409,6 @@ class GeoNexoViewModel(
   private companion object {
     const val TAG = "GeoNexoVM"
     const val STOP_TIMEOUT_MILLIS = 5000L
-
-    fun createInitialDemoChannels(uid: String): List<Channel> {
-      val now = Timestamp.now()
-      return listOf(
-        Channel(
-          id = "demo_sector_norte",
-          ownerId = uid,
-          memberUids = listOf(uid),
-          name = "sector-norte-obra",
-          topic = "Inspección de subestación, postes y zanja hidráulica",
-          channelType = ChannelType.FIELD.name,
-          pinnedDocTitle = "Bitácora Operativa — Sector Norte",
-          pinnedDocBody =
-            "Objetivo del turno:\n• Verificar reposición del poste #14 en cruce Av. Industrial.\n• Validar presión de línea hidráulica antes de las 17:00.\n\nChecklist de campo:\n[x] Inspección visual de acometida\n[ ] Registro fotográfico en marcador #Poste-14\n[ ] Cierre de válvula secundaria",
-          pinnedDocUpdatedBy = "Explorador Local",
-          createdAt = now,
-          updatedAt = now,
-        ),
-        Channel(
-          id = "demo_logistica_sur",
-          ownerId = uid,
-          memberUids = listOf(uid),
-          name = "logistica-ruta-sur",
-          topic = "Entregas de material y puntos de control en ruta metropolitana",
-          channelType = ChannelType.LOGISTICS.name,
-          pinnedDocTitle = "Protocolo de Entregas Sur",
-          pinnedDocBody =
-            "Ventana de descarga:\n• Unidad 04: 09:00 - 11:30\n• Confirmar recepción con foto adjunta en el chat del canal.",
-          pinnedDocUpdatedBy = "Explorador Local",
-          createdAt = now,
-          updatedAt = now,
-        ),
-      )
-    }
-
-    fun createInitialDemoMarkers(uid: String): Map<String, List<GeoMarker>> {
-      val now = Timestamp.now()
-      return mapOf(
-        "demo_sector_norte" to
-          listOf(
-            GeoMarker(
-              id = "demo_mk_1",
-              channelId = "demo_sector_norte",
-              creatorId = uid,
-              updatedByName = "Cuadrilla Norte",
-              memberUids = listOf(uid),
-              title = "Poste #14 — Crucero Norte",
-              notes = "Aislador fracturado detectado en ronda matutina. Requiere grúa ligera.",
-              category = MarkerCategory.INCIDENT.name,
-              status = MarkerStatus.OPEN.name,
-              lat = 19.4352,
-              lng = -99.1388,
-              mapX = 0.34,
-              mapY = 0.38,
-              createdAt = now,
-              updatedAt = now,
-            ),
-            GeoMarker(
-              id = "demo_mk_2",
-              channelId = "demo_sector_norte",
-              creatorId = uid,
-              updatedByName = "Oficina Técnica",
-              memberUids = listOf(uid),
-              title = "Tramo Zanja B2",
-              notes = "Compactación al 85%. Pendiente prueba de hermeticidad.",
-              category = MarkerCategory.PROGRESS.name,
-              status = MarkerStatus.IN_PROGRESS.name,
-              lat = 19.4318,
-              lng = -99.1315,
-              mapX = 0.62,
-              mapY = 0.56,
-              createdAt = now,
-              updatedAt = now,
-            ),
-            GeoMarker(
-              id = "demo_mk_3",
-              channelId = "demo_sector_norte",
-              creatorId = uid,
-              updatedByName = "Almacén",
-              memberUids = listOf(uid),
-              title = "Punto Acceso Almacén",
-              notes = "Ingreso autorizado para camiones hasta 18:00 h.",
-              category = MarkerCategory.CHECKPOINT.name,
-              status = MarkerStatus.RESOLVED.name,
-              lat = 19.4295,
-              lng = -99.1260,
-              mapX = 0.78,
-              mapY = 0.29,
-              createdAt = now,
-              updatedAt = now,
-            ),
-          ),
-        "demo_logistica_sur" to
-          listOf(
-            GeoMarker(
-              id = "demo_mk_4",
-              channelId = "demo_logistica_sur",
-              creatorId = uid,
-              updatedByName = "Unidad 04",
-              memberUids = listOf(uid),
-              title = "Bodega Central Sur",
-              notes = "Lote de transformadores listo para despacho.",
-              category = MarkerCategory.DELIVERY.name,
-              status = MarkerStatus.IN_PROGRESS.name,
-              lat = 19.3810,
-              lng = -99.1520,
-              mapX = 0.48,
-              mapY = 0.72,
-              createdAt = now,
-              updatedAt = now,
-            )
-          ),
-      )
-    }
-
-    fun createInitialDemoMessages(uid: String): Map<String, List<ChannelMessage>> {
-      val now = Timestamp.now()
-      return mapOf(
-        "demo_sector_norte" to
-          listOf(
-            ChannelMessage(
-              id = "demo_msg_1",
-              channelId = "demo_sector_norte",
-              senderId = "demo_colleague_1",
-              senderName = "Ing. Valeria (Campo)",
-              memberUids = listOf(uid),
-              body =
-                "Modo prueba activo: ya puedes chatear, crear puntos en el mapa y editar la bitácora sin cuenta.",
-              linkedMarkerId = "demo_mk_1",
-              linkedMarkerTitle = "Poste #14 — Crucero Norte",
-              messageType = MessageType.GEO_PIN.name,
-              createdAt = now,
-              updatedAt = now,
-            ),
-            ChannelMessage(
-              id = "demo_msg_2",
-              channelId = "demo_sector_norte",
-              senderId = "demo_colleague_2",
-              senderName = "Carlos (Oficina)",
-              memberUids = listOf(uid),
-              body =
-                "Cuando quieras usar Gemini IA o conectar en tiempo real con otro compañero, inicia sesión con Google desde la pestaña Gemini o Ajustes.",
-              messageType = MessageType.TEXT.name,
-              createdAt = now,
-              updatedAt = now,
-            ),
-          ),
-        "demo_logistica_sur" to
-          listOf(
-            ChannelMessage(
-              id = "demo_msg_3",
-              channelId = "demo_logistica_sur",
-              senderId = "demo_colleague_2",
-              senderName = "Unidad 04",
-              memberUids = listOf(uid),
-              body = "En espera de confirmación de salida en Bodega Central Sur.",
-              linkedMarkerId = "demo_mk_4",
-              linkedMarkerTitle = "Bodega Central Sur",
-              messageType = MessageType.GEO_PIN.name,
-              createdAt = now,
-              updatedAt = now,
-            )
-          ),
-      )
-    }
+    const val INITIAL_MESSAGE_PAGE_SIZE = 30
   }
 }

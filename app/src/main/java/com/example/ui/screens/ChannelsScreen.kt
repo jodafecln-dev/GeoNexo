@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Engineering
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocalShipping
@@ -84,6 +85,9 @@ fun ChannelsScreen(
   onOpenChannelMap: (String) -> Unit,
   onCreateChannel: (name: String, topic: String, type: ChannelType) -> Unit,
   onInviteChannel: (Channel) -> Unit,
+  onRevokeInvite: (Channel) -> Unit,
+  onRemoveMember: (Channel, String) -> Unit,
+  onLeaveChannel: (Channel) -> Unit,
   onDismissInviteDialog: () -> Unit,
   onJoinChannelByCode: (code: String, onSuccess: () -> Unit) -> Unit,
   onRequestGoogleSignInForRemote: () -> Unit,
@@ -92,6 +96,7 @@ fun ChannelsScreen(
   var showCreateDialog by remember { mutableStateOf(false) }
   var showJoinDialog by remember { mutableStateOf(false) }
   var showRemoteAuthDialog by remember { mutableStateOf(false) }
+  var managingMembersChannelId by remember { mutableStateOf<String?>(null) }
   var selectedTypeFilter by remember { mutableStateOf<ChannelType?>(null) }
 
   Box(modifier = Modifier.fillMaxSize()) {
@@ -262,6 +267,7 @@ fun ChannelsScreen(
                   canInvite = channel.ownerId == currentUserId,
                   onOpenChat = { onSelectChannel(channel.id) },
                   onOpenMap = { onOpenChannelMap(channel.id) },
+                  onOpenMembers = { managingMembersChannelId = channel.id },
                   onInvite = {
                     if (isAuthenticated) onInviteChannel(channel)
                     else showRemoteAuthDialog = true
@@ -314,6 +320,24 @@ fun ChannelsScreen(
     )
   }
 
+  val liveManagingChannel =
+    managingMembersChannelId?.let { id ->
+      (channelsState as? UiState.Success)?.data?.items?.firstOrNull { it.id == id }
+    }
+  if (liveManagingChannel != null) {
+    ChannelMembersDialog(
+      channel = liveManagingChannel,
+      currentUserId = currentUserId,
+      isAuthenticated = isAuthenticated,
+      inviteActionLoading = inviteActionLoading,
+      onGenerateInvite = onInviteChannel,
+      onRevokeInvite = onRevokeInvite,
+      onRemoveMember = onRemoveMember,
+      onLeaveChannel = onLeaveChannel,
+      onDismiss = { managingMembersChannelId = null },
+    )
+  }
+
   if (showRemoteAuthDialog) {
     AlertDialog(
       onDismissRequest = { showRemoteAuthDialog = false },
@@ -348,6 +372,7 @@ private fun ChannelWorkspaceCard(
   canInvite: Boolean,
   onOpenChat: () -> Unit,
   onOpenMap: () -> Unit,
+  onOpenMembers: () -> Unit,
   onInvite: () -> Unit,
 ) {
   val channelType = channel.resolvedType()
@@ -440,31 +465,60 @@ private fun ChannelWorkspaceCard(
             )
           }
         }
-        if (canInvite) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
           Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier =
-              Modifier.clickable(onClick = onInvite)
-                .testTag("channel_invite_btn_${channel.id}"),
+              Modifier.clickable(onClick = onOpenMembers)
+                .testTag("channel_members_btn_${channel.id}"),
           ) {
             Row(
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+              modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
               Icon(
-                imageVector = Icons.Filled.Share,
-                contentDescription = "Invitar al canal",
-                tint = MaterialTheme.colorScheme.primary,
+                imageVector = Icons.Filled.Group,
+                contentDescription = "Ver equipo del canal",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(14.dp),
               )
               Spacer(Modifier.width(4.dp))
               Text(
-                text = channel.joinCode ?: "Invitar",
+                text = "${channel.memberUids.size}",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
               )
+            }
+          }
+          if (canInvite) {
+            Surface(
+              shape = CircleShape,
+              color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+              modifier =
+                Modifier.clickable(onClick = onInvite)
+                  .testTag("channel_invite_btn_${channel.id}"),
+            ) {
+              Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Icon(
+                  imageVector = Icons.Filled.Share,
+                  contentDescription = "Invitar al canal",
+                  tint = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                  text = channel.joinCode ?: "Invitar",
+                  style = MaterialTheme.typography.labelSmall,
+                  color = MaterialTheme.colorScheme.primary,
+                  fontWeight = FontWeight.Bold,
+                )
+              }
             }
           }
         }

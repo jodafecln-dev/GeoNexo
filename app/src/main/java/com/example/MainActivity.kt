@@ -21,6 +21,8 @@ import com.example.ai.GeminiCopilotService
 import com.example.ai.configureAppCheck
 import com.example.auth.AuthScreen
 import com.example.auth.authStateFlow
+import com.example.data.local.DemoLocalDatabase
+import com.example.data.local.DemoLocalRepository
 import com.example.data.remote.GeoNexoRepository
 import com.example.ui.screens.GeoNexoHubScreen
 import com.example.ui.state.GeminiChatViewModel
@@ -70,23 +72,28 @@ fun GeoNexoAppNavigation() {
           factory =
             viewModelFactory {
               initializer {
+                val app =
+                  checkNotNull(this[APPLICATION_KEY]) {
+                    "APPLICATION_KEY missing from CreationExtras"
+                  }
                 if (isAuthenticated) {
-                  val app =
-                    checkNotNull(this[APPLICATION_KEY]) {
-                      "APPLICATION_KEY missing from CreationExtras"
-                    }
                   val databaseId = app.getString(R.string.firestore_database_id)
                   val db = FirebaseFirestore.getInstance(databaseId)
                   GeoNexoViewModel(
                     repository = GeoNexoRepository(db = db, auth = auth),
                     db = db,
+                    demoLocalRepository = null,
+                    appContext = app.applicationContext,
                     currentUserId = sessionKey,
                     isDemoMode = false,
                   )
                 } else {
+                  val demoDb = DemoLocalDatabase.getInstance(app.applicationContext)
                   GeoNexoViewModel(
                     repository = null,
                     db = null,
+                    demoLocalRepository = DemoLocalRepository(demoDb.dao(), sessionKey),
+                    appContext = app.applicationContext,
                     currentUserId = sessionKey,
                     isDemoMode = true,
                   )

@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -52,10 +53,12 @@ fun PrivacySettingsSheet(
   darkMode: Boolean,
   highContrastMode: Boolean,
   locationSharingActive: Boolean,
+  fieldAlertsEnabled: Boolean,
   offlineModeSimulated: Boolean,
   onToggleDarkMode: (Boolean) -> Unit,
   onToggleHighContrast: (Boolean) -> Unit,
   onToggleLocationSharing: (Boolean) -> Unit,
+  onToggleFieldAlerts: (Boolean) -> Unit,
   onToggleOfflineMode: (Boolean) -> Unit,
   onGoogleSignIn: () -> Unit,
   onExitDemoMode: () -> Unit,
@@ -134,6 +137,15 @@ fun PrivacySettingsSheet(
             checked = locationSharingActive,
             onCheckedChange = onToggleLocationSharing,
             testTag = "switch_location_sharing",
+          )
+          HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+          SettingsSwitchRow(
+            icon = Icons.Filled.NotificationsActive,
+            title = "Alertas de incidencias",
+            subtitle = "Notifica nuevos incidentes y pines del equipo",
+            checked = fieldAlertsEnabled,
+            onCheckedChange = onToggleFieldAlerts,
+            testTag = "switch_field_alerts",
           )
           if (isAuthenticated) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

@@ -32,15 +32,19 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.PinDrop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -67,8 +71,12 @@ import com.example.data.model.ChannelMessage
 import com.example.data.model.GeoMarker
 import com.example.data.model.SyncedCollection
 import com.example.ui.state.UiState
+import com.example.ui.state.WorkspaceUiState
 import com.example.ui.theme.GeoAiGradientEnd
 import com.example.ui.theme.GeoAiGradientStart
+import com.example.util.FieldMediaAndAlerts
+import com.example.workspace.GoogleDocSummary
+import com.example.workspace.GoogleWorkspaceManager
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -76,9 +84,13 @@ import java.util.Locale
 fun ChatScreen(
   channel: Channel?,
   currentUserId: String,
+  isAuthenticated: Boolean,
   messagesState: UiState<SyncedCollection<ChannelMessage>>,
   markers: List<GeoMarker>,
+  workspaceState: WorkspaceUiState,
   activeThreadParentId: String?,
+  currentPageLimit: Int,
+  onLoadOlderMessages: () -> Unit,
   onOpenThread: (String?) -> Unit,
   onJumpToMarker: (String) -> Unit,
   onSendMessage: (
@@ -87,8 +99,14 @@ fun ChatScreen(
     linkedMarker: GeoMarker?,
     attachmentLabel: String?,
     attachmentUri: String?,
+    attachmentSnippet: String?,
   ) -> Unit,
+  onRequestDriveDocs: (String) -> Unit,
+  onCreateGoogleDocForChat: (title: String, body: String) -> Unit,
   onSummarizeWithGemini: () -> Unit,
+  onAnalyzePhotoWithGemini: (ChannelMessage, ByteArray) -> Unit,
+  onAnalyzeGoogleDocWithGemini: (title: String, uri: String, snippet: String?) -> Unit,
+  onShowFeedback: (String) -> Unit,
 ) {
   if (channel == null) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -102,12 +120,18 @@ fun ChatScreen(
   var draft by remember { mutableStateOf("") }
   var selectedMarker by remember { mutableStateOf<GeoMarker?>(null) }
   var selectedPhotoUri by remember { mutableStateOf<Uri?>(null) }
+  var selectedGoogleDoc by remember { mutableStateOf<GoogleDocSummary?>(null) }
   var showMarkerPicker by remember { mutableStateOf(false) }
+  var showGoogleDocPicker by remember { mutableStateOf(false) }
+  var previewPhotoPair by remember { mutableStateOf<Pair<ChannelMessage, ByteArray?>?>(null) }
 
   val photoPickerLauncher =
     rememberLauncherForActivityResult(
       contract = ActivityResultContracts.PickVisualMedia(),
-      onResult = { uri -> selectedPhotoUri = uri },
+      onResult = { uri ->
+        selectedPhotoUri = uri
+        if (uri != null) selectedGoogleDoc = null
+      },
     )
 
   Column(modifier = Modifier.fillMaxSize()) {
@@ -279,6 +303,23 @@ fun ChatScreen(
               verticalArrangement = Arrangement.spacedBy(12.dp),
               modifier = Modifier.fillMaxSize(),
             ) {
+              if (allMessages.size >= currentPageLimit && activeThreadParentId == null) {
+                item(key = "load_older_header") {
+                  OutlinedButton(
+                    onClick = onLoadOlderMessages,
+                    shape = CircleShape,
+                    modifier = Modifier.fillMaxWidth().testTag("load_older_messages_btn"),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Filled.ExpandLess,
+                      contentDescription = null,
+                      modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Cargar mensajes anteriores")
+                  }
+                }
+              }
               items(visibleMessages, key = { it.id }) { msg ->
                 val isSelf = msg.senderId == currentUserId
                 val repliesCount = threadCounts[msg.id] ?: 0
@@ -289,6 +330,11 @@ fun ChatScreen(
                   inThreadMode = activeThreadParentId != null,
                   onReplyInThread = { onOpenThread(msg.id) },
                   onJumpToMarker = onJumpToMarker,
+                  onPreviewPhoto = { bytes -> previewPhotoPair = Pair(msg, bytes) },
+                  onAnalyzeGoogleDoc = { title, uri, snippet ->
+                    onAnalyzeGoogleDocWithGemini(title, uri, snippet)
+                  },
+                  onShowFeedback = onShowFeedback,
                 )
               }
             }
@@ -298,7 +344,7 @@ fun ChatScreen(
     }
 
     // Active composer attachments preview
-    if (selectedMarker != null || selectedPhotoUri != null) {
+    if (selectedMarker != null || selectedPhotoUri != null || selectedGoogleDoc != null) {
       Row(
         modifier =
           Modifier.fillMaxWidth()
@@ -323,6 +369,20 @@ fun ChatScreen(
             trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Quitar foto", modifier = Modifier.size(14.dp)) },
           )
         }
+        if (selectedGoogleDoc != null) {
+          AssistChip(
+            onClick = { selectedGoogleDoc = null },
+            label = {
+              Text(
+                selectedGoogleDoc!!.title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            },
+            leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null, modifier = Modifier.size(16.dp)) },
+            trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Quitar Google Doc", modifier = Modifier.size(14.dp)) },
+          )
+        }
       }
     }
 
@@ -333,7 +393,7 @@ fun ChatScreen(
       modifier = Modifier.fillMaxWidth(),
     ) {
       Row(
-        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+        modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
         IconButton(
@@ -360,6 +420,16 @@ fun ChatScreen(
             tint = MaterialTheme.colorScheme.secondary,
           )
         }
+        IconButton(
+          onClick = { showGoogleDocPicker = true },
+          modifier = Modifier.testTag("attach_google_doc_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.Description,
+            contentDescription = "Adjuntar Google Doc",
+            tint = MaterialTheme.colorScheme.tertiary,
+          )
+        }
         OutlinedTextField(
           value = draft,
           onValueChange = { draft = it },
@@ -380,22 +450,28 @@ fun ChatScreen(
             ),
           modifier = Modifier.weight(1f).testTag("chat_message_input"),
         )
-        Spacer(Modifier.width(6.dp))
-        val canSend = draft.trim().isNotEmpty()
+        Spacer(Modifier.width(4.dp))
+        val canSend = draft.trim().isNotEmpty() || selectedGoogleDoc != null
         IconButton(
           onClick = {
-            val clean = draft.trim()
+            val clean =
+              draft.trim().ifEmpty {
+                selectedGoogleDoc?.let { "Compartió Google Doc: ${it.title}" }.orEmpty()
+              }
             if (clean.isNotEmpty()) {
+              val doc = selectedGoogleDoc
               onSendMessage(
                 clean,
                 activeThreadParentId,
                 selectedMarker,
-                if (selectedPhotoUri != null) "Evidencia fotográfica de campo" else null,
-                selectedPhotoUri?.toString(),
+                doc?.title ?: if (selectedPhotoUri != null) "Evidencia fotográfica de campo" else null,
+                doc?.webViewLink ?: selectedPhotoUri?.toString(),
+                doc?.snippet,
               )
               draft = ""
               selectedMarker = null
               selectedPhotoUri = null
+              selectedGoogleDoc = null
             }
           },
           enabled = canSend,
@@ -473,6 +549,62 @@ fun ChatScreen(
       },
     )
   }
+
+  if (previewPhotoPair != null) {
+    val (photoMsg, photoBytes) = previewPhotoPair!!
+    AlertDialog(
+      onDismissRequest = { previewPhotoPair = null },
+      title = { Text(photoMsg.senderName) },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          AsyncImage(
+            model = photoBytes ?: photoMsg.attachmentUri,
+            contentDescription = photoMsg.attachmentLabel ?: "Evidencia fotográfica",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxWidth().height(280.dp).clip(MaterialTheme.shapes.medium),
+          )
+          Text(photoMsg.body, style = MaterialTheme.typography.bodyMedium)
+        }
+      },
+      confirmButton = {
+        if (photoBytes != null) {
+          Button(
+            onClick = {
+              previewPhotoPair = null
+              onAnalyzePhotoWithGemini(photoMsg, photoBytes)
+            },
+            modifier = Modifier.testTag("analyze_chat_photo_gemini_btn"),
+          ) {
+            Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Analizar con Gemini")
+          }
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { previewPhotoPair = null }) { Text("Cerrar") }
+      },
+    )
+  }
+  if (showGoogleDocPicker) {
+    GoogleDocPickerDialog(
+      dialogTitle = "Adjuntar Google Doc al chat",
+      defaultCreateTitle = "Reporte — #${channel.name}",
+      defaultCreateBody = "Resumen operativo compartido desde #${channel.name}:\n\n",
+      isAuthenticated = isAuthenticated,
+      workspaceState = workspaceState,
+      onRequestAuthorizeAndLoad = onRequestDriveDocs,
+      onSelectExistingDoc = { doc ->
+        selectedGoogleDoc = doc
+        selectedPhotoUri = null
+        showGoogleDocPicker = false
+      },
+      onCreateNewDoc = { title, body ->
+        onCreateGoogleDocForChat(title, body)
+      },
+      onDismiss = { showGoogleDocPicker = false },
+    )
+  }
 }
 
 @Composable
@@ -483,7 +615,12 @@ private fun MessageBubbleCard(
   inThreadMode: Boolean,
   onReplyInThread: () -> Unit,
   onJumpToMarker: (String) -> Unit,
+  onPreviewPhoto: (ByteArray?) -> Unit,
+  onAnalyzeGoogleDoc: (title: String, uri: String, snippet: String?) -> Unit,
+  onShowFeedback: (String) -> Unit,
 ) {
+  val decodedBytes =
+    remember(message.attachmentData) { FieldMediaAndAlerts.decodeBase64ToBytes(message.attachmentData) }
   val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
   val timeText = message.createdAt?.toDate()?.let { timeFormat.format(it) } ?: "Enviando..."
   val bubbleShape =
@@ -559,15 +696,35 @@ private fun MessageBubbleCard(
           color = MaterialTheme.colorScheme.onSurface,
         )
 
-        if (!message.attachmentUri.isNullOrBlank()) {
+        val googleDocUri =
+          message.attachmentUri?.takeIf { GoogleWorkspaceManager.isValidGoogleWorkspaceUrl(it) }
+        val photoModel: Any? =
+          if (googleDocUri == null) decodedBytes ?: message.attachmentUri?.takeIf { it.isNotBlank() }
+          else null
+
+        if (googleDocUri != null) {
+          val docTitle = message.attachmentLabel?.ifBlank { "Documento Google" } ?: "Documento Google"
+          GoogleDocCard(
+            title = docTitle,
+            docUri = googleDocUri,
+            snippet = message.attachmentSnippet,
+            onOpenExternalError = onShowFeedback,
+            onAnalyzeWithGemini = {
+              onAnalyzeGoogleDoc(docTitle, googleDocUri, message.attachmentSnippet)
+            },
+            modifier = Modifier.testTag("chat_gdoc_card_${message.id}"),
+          )
+        } else if (photoModel != null) {
           AsyncImage(
-            model = message.attachmentUri,
+            model = photoModel,
             contentDescription = message.attachmentLabel ?: "Foto adjunta",
             contentScale = ContentScale.Crop,
             modifier =
               Modifier.fillMaxWidth()
-                .height(160.dp)
-                .clip(MaterialTheme.shapes.small),
+                .height(170.dp)
+                .clip(MaterialTheme.shapes.small)
+                .clickable { onPreviewPhoto(decodedBytes) }
+                .testTag("chat_photo_${message.id}"),
           )
         } else if (!message.attachmentLabel.isNullOrBlank()) {
           Text(

@@ -34,10 +34,12 @@ import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.GpsOff
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.ShareLocation
 import androidx.compose.material3.AlertDialog
@@ -64,6 +66,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -89,22 +92,35 @@ import com.example.data.model.MarkerCategory
 import com.example.data.model.MarkerStatus
 import com.example.data.model.SyncedCollection
 import com.example.ui.state.UiState
+import com.example.ui.state.WorkspaceUiState
 import com.example.ui.theme.GeoMapTerrainDark
 import com.example.ui.theme.GeoMapTerrainLight
 import com.example.ui.theme.GeoRouteBlue
 import com.example.ui.theme.GeoStatusInProgress
 import com.example.ui.theme.GeoStatusOpen
 import com.example.ui.theme.GeoStatusResolved
+import com.example.workspace.GoogleDocSummary
 import kotlin.math.hypot
+
+private data class PendingMapPoint(
+  val mapX: Double,
+  val mapY: Double,
+  val lat: Double?,
+  val lng: Double?,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SharedMapScreen(
   channel: Channel?,
+  isAuthenticated: Boolean,
   markersState: UiState<SyncedCollection<GeoMarker>>,
   presenceList: List<ChannelPresence>,
+  workspaceState: WorkspaceUiState,
   focusedMarkerId: String?,
   locationSharingActive: Boolean,
+  offlineNetworkDisabled: Boolean,
+  lastKnownCoords: Pair<Double, Double>,
   onClearFocusedMarker: () -> Unit,
   onToggleLocationSharing: () -> Unit,
   onCreateMarker: (
@@ -114,6 +130,8 @@ fun SharedMapScreen(
     status: MarkerStatus,
     mapX: Double,
     mapY: Double,
+    lat: Double?,
+    lng: Double?,
   ) -> Unit,
   onUpdateMarker: (
     markerId: String,
@@ -125,6 +143,12 @@ fun SharedMapScreen(
   onDeleteMarker: (String) -> Unit,
   onDiscussMarkerInChat: (GeoMarker) -> Unit,
   onAnalyzeMarkerWithGemini: (GeoMarker) -> Unit,
+  onRequestDriveDocs: (String) -> Unit,
+  onLinkDocToMarker: (GeoMarker, GoogleDocSummary) -> Unit,
+  onUnlinkDocFromMarker: (GeoMarker) -> Unit,
+  onCreateDocForMarker: (GeoMarker, String, String) -> Unit,
+  onAnalyzeGoogleDocWithGemini: (title: String, uri: String, snippet: String?) -> Unit,
+  onShowFeedback: (String) -> Unit,
 ) {
   if (channel == null) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -134,14 +158,17 @@ fun SharedMapScreen(
   }
 
   val markers = (markersState as? UiState.Success)?.data?.items.orEmpty()
+  var tileMode by remember { mutableStateOf(MapTileLayerMode.STREETS) }
   var selectedCategoryFilter by remember { mutableStateOf<MarkerCategory?>(null) }
   var showTeamLayer by remember { mutableStateOf(true) }
   var showRoutesLayer by remember { mutableStateOf(true) }
 
   var placingMarkerMode by remember { mutableStateOf(false) }
-  var pendingPlacementCoords by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+  var pendingPoint by remember { mutableStateOf<PendingMapPoint?>(null) }
   var activeMarkerSheet by remember { mutableStateOf<GeoMarker?>(null) }
   var editingMarker by remember { mutableStateOf<GeoMarker?>(null) }
+  var docPickerTargetMarker by remember { mutableStateOf<GeoMarker?>(null) }
+  var recenterTrigger by remember { mutableIntStateOf(0) }
 
   var zoom by remember { mutableFloatStateOf(1f) }
   var panOffset by remember { mutableStateOf(Offset.Zero) }
@@ -151,6 +178,10 @@ fun SharedMapScreen(
       if (selectedCategoryFilter == null) markers
       else markers.filter { it.resolvedCategory() == selectedCategoryFilter }
     }
+
+  val focusedMarker = remember(focusedMarkerId, markers) {
+    focusedMarkerId?.let { id -> markers.firstOrNull { it.id == id } }
+  }
 
   LaunchedEffect(focusedMarkerId, markers) {
     if (focusedMarkerId != null) {
@@ -171,8 +202,7 @@ fun SharedMapScreen(
       label = "pulse_scale",
     )
 
-  val surfaceTint =
-    if (isSystemInDarkTheme()) GeoMapTerrainDark else GeoMapTerrainLight
+  val surfaceTint = if (isSystemInDarkTheme()) GeoMapTerrainDark else GeoMapTerrainLight
   val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.24f)
   val minorGridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.10f)
   val contourColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
@@ -180,7 +210,7 @@ fun SharedMapScreen(
   val secondaryColor = MaterialTheme.colorScheme.secondary
 
   Column(modifier = Modifier.fillMaxSize()) {
-    // Layer Controls Strip
+    // Map Base Layer + Category Filter Strip
     Row(
       modifier =
         Modifier.fillMaxWidth()
@@ -189,6 +219,17 @@ fun SharedMapScreen(
       horizontalArrangement = Arrangement.spacedBy(8.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
+      MapTileLayerMode.entries.forEach { mode ->
+        FilterChip(
+          selected = tileMode == mode,
+          onClick = { tileMode = mode },
+          label = { Text(mode.labelEs) },
+          leadingIcon = {
+            Icon(Icons.Filled.Map, contentDescription = null, modifier = Modifier.size(15.dp))
+          },
+          modifier = Modifier.testTag("map_tile_mode_${mode.name.lowercase()}"),
+        )
+      }
       FilterChip(
         selected = selectedCategoryFilter == null,
         onClick = { selectedCategoryFilter = null },
@@ -229,7 +270,7 @@ fun SharedMapScreen(
           horizontalArrangement = Arrangement.SpaceBetween,
         ) {
           Text(
-            text = "Toca cualquier punto del mapa para colocar el marcador",
+            text = "Toca el mapa para fijar coordenadas exactas",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onTertiaryContainer,
             modifier = Modifier.weight(1f),
@@ -241,7 +282,7 @@ fun SharedMapScreen(
       }
     }
 
-    // Interactive Topographic Map Viewport
+    // Dual-Mode Interactive Map Viewport (Real OSMDroid OR Offline Vector Canvas)
     Box(
       modifier =
         Modifier.weight(1f)
@@ -250,10 +291,7 @@ fun SharedMapScreen(
           .clip(MaterialTheme.shapes.large)
           .background(
             Brush.radialGradient(
-              listOf(
-                surfaceTint,
-                MaterialTheme.colorScheme.surfaceContainer,
-              )
+              listOf(surfaceTint, MaterialTheme.colorScheme.surfaceContainer)
             )
           )
     ) {
@@ -269,190 +307,184 @@ fun SharedMapScreen(
           )
         }
         is UiState.Success -> {
-          Canvas(
-            modifier =
-              Modifier.fillMaxSize()
-                .pointerInput(Unit) {
-                  detectTransformGestures { _, pan, gestureZoom, _ ->
-                    zoom = (zoom * gestureZoom).coerceIn(0.8f, 3.2f)
-                    val maxPanX = size.width * 0.45f * zoom
-                    val maxPanY = size.height * 0.45f * zoom
-                    panOffset =
-                      Offset(
-                        x = (panOffset.x + pan.x).coerceIn(-maxPanX, maxPanX),
-                        y = (panOffset.y + pan.y).coerceIn(-maxPanY, maxPanY),
-                      )
-                  }
-                }
-                .pointerInput(placingMarkerMode, filteredMarkers, zoom, panOffset) {
-                  detectTapGestures { tapOffset ->
-                    val w = size.width.toFloat().coerceAtLeast(1f)
-                    val h = size.height.toFloat().coerceAtLeast(1f)
-                    val center = Offset(w / 2f, h / 2f)
-                    val normX = (((tapOffset.x - panOffset.x - center.x) / zoom) + center.x) / w
-                    val normY = (((tapOffset.y - panOffset.y - center.y) / zoom) + center.y) / h
-
-                    if (placingMarkerMode) {
-                      pendingPlacementCoords =
-                        Pair(
-                          normX.toDouble().coerceIn(0.05, 0.95),
-                          normY.toDouble().coerceIn(0.05, 0.95),
+          if (tileMode != MapTileLayerMode.SCHEMATIC) {
+            OsmMapViewport(
+              tileMode = tileMode,
+              offlineNetworkDisabled = offlineNetworkDisabled,
+              markers = filteredMarkers,
+              presenceList = presenceList,
+              showTeamLayer = showTeamLayer,
+              showRoutesLayer = showRoutesLayer,
+              placingMarkerMode = placingMarkerMode,
+              centerCoords = lastKnownCoords,
+              recenterTrigger = recenterTrigger,
+              focusedMarker = focusedMarker,
+              onMapTapToPlace = { lat, lng ->
+                pendingPoint = PendingMapPoint(mapX = 0.5, mapY = 0.5, lat = lat, lng = lng)
+                placingMarkerMode = false
+              },
+              onSelectMarker = { mk -> activeMarkerSheet = mk },
+              modifier = Modifier.fillMaxSize().testTag("osm_map_viewport"),
+            )
+          } else {
+            Canvas(
+              modifier =
+                Modifier.fillMaxSize()
+                  .testTag("schematic_map_canvas")
+                  .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, gestureZoom, _ ->
+                      zoom = (zoom * gestureZoom).coerceIn(0.8f, 3.2f)
+                      val maxPanX = size.width * 0.45f * zoom
+                      val maxPanY = size.height * 0.45f * zoom
+                      panOffset =
+                        Offset(
+                          x = (panOffset.x + pan.x).coerceIn(-maxPanX, maxPanX),
+                          y = (panOffset.y + pan.y).coerceIn(-maxPanY, maxPanY),
                         )
-                      placingMarkerMode = false
-                    } else {
-                      // Hit test nearest marker
-                      val nearest =
-                        filteredMarkers.minByOrNull { mk ->
-                          val mx = (((mk.mapX.toFloat() * w) - center.x) * zoom) + center.x + panOffset.x
-                          val my = (((mk.mapY.toFloat() * h) - center.y) * zoom) + center.y + panOffset.y
-                          hypot(tapOffset.x - mx, tapOffset.y - my)
-                        }
-                      if (nearest != null) {
-                        val mx = (((nearest.mapX.toFloat() * w) - center.x) * zoom) + center.x + panOffset.x
-                        val my = (((nearest.mapY.toFloat() * h) - center.y) * zoom) + center.y + panOffset.y
-                        if (hypot(tapOffset.x - mx, tapOffset.y - my) <= 56f) {
-                          activeMarkerSheet = nearest
+                    }
+                  }
+                  .pointerInput(placingMarkerMode, filteredMarkers, zoom, panOffset) {
+                    detectTapGestures { tapOffset ->
+                      val w = size.width.toFloat().coerceAtLeast(1f)
+                      val h = size.height.toFloat().coerceAtLeast(1f)
+                      val center = Offset(w / 2f, h / 2f)
+                      val normX = (((tapOffset.x - panOffset.x - center.x) / zoom) + center.x) / w
+                      val normY = (((tapOffset.y - panOffset.y - center.y) / zoom) + center.y) / h
+
+                      if (placingMarkerMode) {
+                        pendingPoint =
+                          PendingMapPoint(
+                            mapX = normX.toDouble().coerceIn(0.05, 0.95),
+                            mapY = normY.toDouble().coerceIn(0.05, 0.95),
+                            lat = null,
+                            lng = null,
+                          )
+                        placingMarkerMode = false
+                      } else {
+                        val nearest =
+                          filteredMarkers.minByOrNull { mk ->
+                            val mx = (((mk.mapX.toFloat() * w) - center.x) * zoom) + center.x + panOffset.x
+                            val my = (((mk.mapY.toFloat() * h) - center.y) * zoom) + center.y + panOffset.y
+                            hypot(tapOffset.x - mx, tapOffset.y - my)
+                          }
+                        if (nearest != null) {
+                          val mx = (((nearest.mapX.toFloat() * w) - center.x) * zoom) + center.x + panOffset.x
+                          val my = (((nearest.mapY.toFloat() * h) - center.y) * zoom) + center.y + panOffset.y
+                          if (hypot(tapOffset.x - mx, tapOffset.y - my) <= 56f) {
+                            activeMarkerSheet = nearest
+                          }
                         }
                       }
                     }
                   }
-                }
-          ) {
-            val w = size.width
-            val h = size.height
-            val center = Offset(w / 2f, h / 2f)
+            ) {
+              val w = size.width
+              val h = size.height
+              val center = Offset(w / 2f, h / 2f)
 
-            fun toScreen(nx: Double, ny: Double): Offset {
-              val rawX = nx.toFloat() * w
-              val rawY = ny.toFloat() * h
-              return Offset(
-                x = ((rawX - center.x) * zoom) + center.x + panOffset.x,
-                y = ((rawY - center.y) * zoom) + center.y + panOffset.y,
-              )
-            }
-
-            // Minor + Major coordinate grid lines
-            val cols = 12
-            val rows = 12
-            for (i in 1 until cols) {
-              val x = w * (i / cols.toFloat())
-              drawLine(
-                color = if (i % 2 == 0) gridColor else minorGridColor,
-                start = Offset(x, 0f),
-                end = Offset(x, h),
-                strokeWidth = if (i % 2 == 0) 1.5f else 1f,
-              )
-            }
-            for (j in 1 until rows) {
-              val y = h * (j / rows.toFloat())
-              drawLine(
-                color = if (j % 2 == 0) gridColor else minorGridColor,
-                start = Offset(0f, y),
-                end = Offset(w, y),
-                strokeWidth = if (j % 2 == 0) 1.5f else 1f,
-              )
-            }
-
-            // Topographic elevation contour curves
-            for (ring in 1..4) {
-              val rFactor = ring * 0.14f * zoom
-              val path =
-                Path().apply {
-                  val cx = center.x + panOffset.x * 0.5f
-                  val cy = center.y + panOffset.y * 0.5f
-                  moveTo(cx - w * rFactor, cy)
-                  cubicTo(
-                    cx - w * rFactor * 0.8f,
-                    cy - h * rFactor * 1.1f,
-                    cx + w * rFactor * 0.9f,
-                    cy - h * rFactor * 0.7f,
-                    cx + w * rFactor,
-                    cy + h * rFactor * 0.1f,
-                  )
-                  cubicTo(
-                    cx + w * rFactor * 0.7f,
-                    cy + h * rFactor * 0.95f,
-                    cx - w * rFactor * 0.6f,
-                    cy + h * rFactor * 0.85f,
-                    cx - w * rFactor,
-                    cy,
-                  )
-                }
-              drawPath(path, color = contourColor, style = Stroke(width = 2.2f))
-            }
-
-            // Route line connecting checkpoints/routes
-            if (showRoutesLayer && filteredMarkers.size >= 2) {
-              val routePts =
-                filteredMarkers
-                  .sortedBy { it.mapX }
-                  .map { toScreen(it.mapX, it.mapY) }
-              val routePath =
-                Path().apply {
-                  moveTo(routePts.first().x, routePts.first().y)
-                  routePts.drop(1).forEach { pt -> lineTo(pt.x, pt.y) }
-                }
-              drawPath(
-                path = routePath,
-                color = GeoRouteBlue.copy(alpha = 0.65f),
-                style =
-                  Stroke(
-                    width = 5f,
-                    cap = StrokeCap.Round,
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(18f, 12f), 0f),
-                  ),
-              )
-            }
-
-            // Live Team Member Pins
-            if (showTeamLayer) {
-              presenceList.forEach { member ->
-                val pt = toScreen(member.mapX, member.mapY)
-                drawCircle(
-                  color = primaryColor.copy(alpha = (2.2f - pulseScale).coerceIn(0.05f, 0.35f)),
-                  radius = 18f * pulseScale,
-                  center = pt,
-                )
-                drawCircle(
-                  color = Color.White,
-                  radius = 14f,
-                  center = pt,
-                )
-                drawCircle(
-                  color = secondaryColor,
-                  radius = 10f,
-                  center = pt,
+              fun toScreen(nx: Double, ny: Double): Offset {
+                val rawX = nx.toFloat() * w
+                val rawY = ny.toFloat() * h
+                return Offset(
+                  x = ((rawX - center.x) * zoom) + center.x + panOffset.x,
+                  y = ((rawY - center.y) * zoom) + center.y + panOffset.y,
                 )
               }
-            }
 
-            // GeoMarkers
-            filteredMarkers.forEach { mk ->
-              val pt = toScreen(mk.mapX, mk.mapY)
-              val pinColor =
-                when (mk.resolvedStatus()) {
-                  MarkerStatus.OPEN -> GeoStatusOpen
-                  MarkerStatus.IN_PROGRESS -> GeoStatusInProgress
-                  MarkerStatus.RESOLVED -> GeoStatusResolved
+              val cols = 12
+              val rows = 12
+              for (i in 1 until cols) {
+                val x = w * (i / cols.toFloat())
+                drawLine(
+                  color = if (i % 2 == 0) gridColor else minorGridColor,
+                  start = Offset(x, 0f),
+                  end = Offset(x, h),
+                  strokeWidth = if (i % 2 == 0) 1.5f else 1f,
+                )
+              }
+              for (j in 1 until rows) {
+                val y = h * (j / rows.toFloat())
+                drawLine(
+                  color = if (j % 2 == 0) gridColor else minorGridColor,
+                  start = Offset(0f, y),
+                  end = Offset(w, y),
+                  strokeWidth = if (j % 2 == 0) 1.5f else 1f,
+                )
+              }
+
+              for (ring in 1..4) {
+                val rFactor = ring * 0.14f * zoom
+                val path =
+                  Path().apply {
+                    val cx = center.x + panOffset.x * 0.5f
+                    val cy = center.y + panOffset.y * 0.5f
+                    moveTo(cx - w * rFactor, cy)
+                    cubicTo(
+                      cx - w * rFactor * 0.8f,
+                      cy - h * rFactor * 1.1f,
+                      cx + w * rFactor * 0.9f,
+                      cy - h * rFactor * 0.7f,
+                      cx + w * rFactor,
+                      cy + h * rFactor * 0.1f,
+                    )
+                    cubicTo(
+                      cx + w * rFactor * 0.7f,
+                      cy + h * rFactor * 0.95f,
+                      cx - w * rFactor * 0.6f,
+                      cy + h * rFactor * 0.85f,
+                      cx - w * rFactor,
+                      cy,
+                    )
+                  }
+                drawPath(path, color = contourColor, style = Stroke(width = 2.2f))
+              }
+
+              if (showRoutesLayer && filteredMarkers.size >= 2) {
+                val routePts = filteredMarkers.sortedBy { it.mapX }.map { toScreen(it.mapX, it.mapY) }
+                val routePath =
+                  Path().apply {
+                    moveTo(routePts.first().x, routePts.first().y)
+                    routePts.drop(1).forEach { pt -> lineTo(pt.x, pt.y) }
+                  }
+                drawPath(
+                  path = routePath,
+                  color = GeoRouteBlue.copy(alpha = 0.65f),
+                  style =
+                    Stroke(
+                      width = 5f,
+                      cap = StrokeCap.Round,
+                      pathEffect = PathEffect.dashPathEffect(floatArrayOf(18f, 12f), 0f),
+                    ),
+                )
+              }
+
+              if (showTeamLayer) {
+                presenceList.forEach { member ->
+                  val pt = toScreen(member.mapX, member.mapY)
+                  drawCircle(
+                    color = primaryColor.copy(alpha = (2.2f - pulseScale).coerceIn(0.05f, 0.35f)),
+                    radius = 18f * pulseScale,
+                    center = pt,
+                  )
+                  drawCircle(color = Color.White, radius = 14f, center = pt)
+                  drawCircle(color = secondaryColor, radius = 10f, center = pt)
                 }
-              val isFocused = activeMarkerSheet?.id == mk.id
-              val radius = if (isFocused) 24f else 18f
+              }
 
-              drawCircle(
-                color = pinColor.copy(alpha = 0.22f),
-                radius = radius + 10f,
-                center = pt,
-              )
-              drawCircle(
-                color = Color.White,
-                radius = radius + 3f,
-                center = pt,
-              )
-              drawCircle(
-                color = pinColor,
-                radius = radius,
-                center = pt,
-              )
+              filteredMarkers.forEach { mk ->
+                val pt = toScreen(mk.mapX, mk.mapY)
+                val pinColor =
+                  when (mk.resolvedStatus()) {
+                    MarkerStatus.OPEN -> GeoStatusOpen
+                    MarkerStatus.IN_PROGRESS -> GeoStatusInProgress
+                    MarkerStatus.RESOLVED -> GeoStatusResolved
+                  }
+                val isFocused = activeMarkerSheet?.id == mk.id
+                val radius = if (isFocused) 24f else 18f
+                drawCircle(color = pinColor.copy(alpha = 0.22f), radius = radius + 10f, center = pt)
+                drawCircle(color = Color.White, radius = radius + 3f, center = pt)
+                drawCircle(color = pinColor, radius = radius, center = pt)
+              }
             }
           }
         }
@@ -472,9 +504,15 @@ fun SharedMapScreen(
             color = MaterialTheme.colorScheme.onSurface,
           )
           Text(
-            text = "Zoom ${(zoom * 100).toInt()}% · ${filteredMarkers.size} puntos",
+            text =
+              if (offlineNetworkDisabled && tileMode != MapTileLayerMode.SCHEMATIC)
+                "${tileMode.labelEs} (caché offline) · ${filteredMarkers.size} puntos"
+              else "${tileMode.labelEs} · ${filteredMarkers.size} puntos",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color =
+              if (offlineNetworkDisabled && tileMode != MapTileLayerMode.SCHEMATIC)
+                MaterialTheme.colorScheme.tertiary
+              else MaterialTheme.colorScheme.onSurfaceVariant,
           )
         }
       }
@@ -525,6 +563,7 @@ fun SharedMapScreen(
           onClick = {
             zoom = 1f
             panOffset = Offset.Zero
+            recenterTrigger++
           },
           containerColor = MaterialTheme.colorScheme.surface,
           contentColor = MaterialTheme.colorScheme.onSurface,
@@ -542,7 +581,7 @@ fun SharedMapScreen(
       }
     }
 
-    // Quick Horizontal Marker Tray (One-Handed Bottom Ergonomics)
+    // Quick Horizontal Marker Tray
     if (filteredMarkers.isNotEmpty()) {
       LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
@@ -589,6 +628,15 @@ fun SharedMapScreen(
                   maxLines = 1,
                 )
               }
+              if (!mk.linkedDocUri.isNullOrBlank()) {
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                  imageVector = Icons.Filled.Description,
+                  contentDescription = "Tiene Google Doc vinculado",
+                  tint = MaterialTheme.colorScheme.primary,
+                  modifier = Modifier.size(16.dp),
+                )
+              }
             }
           }
         }
@@ -598,24 +646,22 @@ fun SharedMapScreen(
     }
   }
 
-  // Create Marker Dialog
-  if (pendingPlacementCoords != null) {
+  if (pendingPoint != null) {
     MarkerEditorDialog(
       dialogTitle = "Nuevo marcador en mapa",
       initialTitle = "",
       initialNotes = "",
       initialCategory = MarkerCategory.INCIDENT,
       initialStatus = MarkerStatus.OPEN,
-      onDismiss = { pendingPlacementCoords = null },
+      onDismiss = { pendingPoint = null },
       onSave = { title, notes, category, status ->
-        val coords = pendingPlacementCoords!!
-        onCreateMarker(title, notes, category, status, coords.first, coords.second)
-        pendingPlacementCoords = null
+        val pt = pendingPoint!!
+        onCreateMarker(title, notes, category, status, pt.mapX, pt.mapY, pt.lat, pt.lng)
+        pendingPoint = null
       },
     )
   }
 
-  // Edit Marker Dialog
   if (editingMarker != null) {
     val target = editingMarker!!
     MarkerEditorDialog(
@@ -633,9 +679,8 @@ fun SharedMapScreen(
     )
   }
 
-  // Marker Detail ModalBottomSheet
   if (activeMarkerSheet != null) {
-    val mk = activeMarkerSheet!!
+    val mk = markers.firstOrNull { it.id == activeMarkerSheet!!.id } ?: activeMarkerSheet!!
     ModalBottomSheet(onDismissRequest = { activeMarkerSheet = null }) {
       Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
@@ -676,7 +721,7 @@ fun SharedMapScreen(
           color = MaterialTheme.colorScheme.surfaceVariant,
         ) {
           Text(
-            text = "Coords: ${String.format("%.4f", mk.lat)}, ${String.format("%.4f", mk.lng)}",
+            text = "GPS: ${String.format("%.5f", mk.lat)}, ${String.format("%.5f", mk.lng)}",
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
           )
@@ -686,6 +731,35 @@ fun SharedMapScreen(
           text = mk.notes.ifBlank { "Sin notas operativas registradas." },
           style = MaterialTheme.typography.bodyMedium,
         )
+
+        if (!mk.linkedDocUri.isNullOrBlank()) {
+          val docTitle = mk.linkedDocTitle?.ifBlank { "Documento del punto" } ?: "Documento del punto"
+          GoogleDocCard(
+            title = docTitle,
+            docUri = mk.linkedDocUri,
+            snippet = mk.linkedDocSnippet,
+            onOpenExternalError = onShowFeedback,
+            onAnalyzeWithGemini = {
+              activeMarkerSheet = null
+              onAnalyzeGoogleDocWithGemini(docTitle, mk.linkedDocUri, mk.linkedDocSnippet)
+            },
+            onUnlink = { onUnlinkDocFromMarker(mk) },
+            modifier = Modifier.testTag("marker_linked_gdoc_card"),
+          )
+        } else {
+          OutlinedButton(
+            onClick = { docPickerTargetMarker = mk },
+            modifier = Modifier.fillMaxWidth().testTag("marker_link_google_doc_btn"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Description,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("Vincular o crear Google Doc")
+          }
+        }
 
         Text("Estado operativo", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -708,11 +782,7 @@ fun SharedMapScreen(
           },
           modifier = Modifier.fillMaxWidth().testTag("marker_analyze_gemini_btn"),
         ) {
-          Icon(
-            imageVector = Icons.Filled.AutoAwesome,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-          )
+          Icon(imageVector = Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
           Spacer(Modifier.width(8.dp))
           Text("Analizar punto con Gemini")
         }
@@ -740,6 +810,41 @@ fun SharedMapScreen(
         }
       }
     }
+  }
+
+  if (docPickerTargetMarker != null) {
+    val targetMarker = docPickerTargetMarker!!
+    GoogleDocPickerDialog(
+      dialogTitle = "Google Doc para '${targetMarker.title}'",
+      defaultCreateTitle = "Ficha — ${targetMarker.title}",
+      defaultCreateBody =
+        buildString {
+          append("Punto de campo: ").append(targetMarker.title).append('\n')
+          append("Categoría / Estado: ")
+            .append(targetMarker.resolvedCategory().labelEs)
+            .append(" · ")
+            .append(targetMarker.resolvedStatus().labelEs)
+            .append('\n')
+          append("Coordenadas GPS: ")
+            .append(String.format("%.5f", targetMarker.lat))
+            .append(", ")
+            .append(String.format("%.5f", targetMarker.lng))
+            .append("\n\n")
+          append("Notas de campo:\n").append(targetMarker.notes.ifBlank { "Sin notas iniciales." })
+        },
+      isAuthenticated = isAuthenticated,
+      workspaceState = workspaceState,
+      onRequestAuthorizeAndLoad = onRequestDriveDocs,
+      onSelectExistingDoc = { doc ->
+        onLinkDocToMarker(targetMarker, doc)
+        docPickerTargetMarker = null
+      },
+      onCreateNewDoc = { title, body ->
+        onCreateDocForMarker(targetMarker, title, body)
+        docPickerTargetMarker = null
+      },
+      onDismiss = { docPickerTargetMarker = null },
+    )
   }
 }
 

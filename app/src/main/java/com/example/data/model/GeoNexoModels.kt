@@ -22,6 +22,7 @@ enum class MessageType {
   TEXT,
   GEO_PIN,
   PHOTO,
+  DOC_LINK,
   SYSTEM;
 
   companion object {
@@ -74,18 +75,33 @@ data class Channel(
   @DocumentId val id: String = "",
   val ownerId: String = "",
   val memberUids: List<String> = emptyList(),
+  val memberNames: Map<String, String> = emptyMap(),
   val name: String = "",
   val topic: String = "",
   val channelType: String = ChannelType.FIELD.name,
   val pinnedDocTitle: String = "",
   val pinnedDocBody: String = "",
   val pinnedDocUpdatedBy: String = "",
+  val pinnedDocRevision: Long = 1L,
   val joinCode: String? = null,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 ) {
   fun resolvedType(): ChannelType = ChannelType.safeOf(channelType)
 }
+
+@Keep
+@IgnoreExtraProperties
+data class DocRevision(
+  @DocumentId val id: String = "",
+  val channelId: String = "",
+  val authorId: String = "",
+  val authorName: String = "",
+  val title: String = "",
+  val body: String = "",
+  val revisionNumber: Long = 1L,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+)
 
 @Keep
 @IgnoreExtraProperties
@@ -101,6 +117,8 @@ data class ChannelMessage(
   val linkedMarkerTitle: String? = null,
   val attachmentLabel: String? = null,
   val attachmentUri: String? = null,
+  val attachmentSnippet: String? = null,
+  val attachmentData: String? = null,
   val messageType: String = MessageType.TEXT.name,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
@@ -124,6 +142,10 @@ data class GeoMarker(
   val lng: Double = -99.1332,
   val mapX: Double = 0.5,
   val mapY: Double = 0.5,
+  val linkedDocId: String? = null,
+  val linkedDocTitle: String? = null,
+  val linkedDocUri: String? = null,
+  val linkedDocSnippet: String? = null,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null,
 ) {

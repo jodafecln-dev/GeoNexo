@@ -38,6 +38,8 @@
         "pinnedDocTitle": { "type": "string" },
         "pinnedDocBody": { "type": "string" },
         "pinnedDocUpdatedBy": { "type": "string" },
+        "pinnedDocRevision": { "type": "integer" },
+        "memberNames": { "type": "object" },
         "joinCode": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
@@ -64,7 +66,8 @@
         "channelId": { "type": "string" },
         "channelName": { "type": "string" },
         "ownerId": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "expiresAt": { "type": "string", "format": "date-time", "description": "Expiration timestamp" }
       },
       "required": [
         "inviteCode",
@@ -89,7 +92,9 @@
         "linkedMarkerTitle": { "type": "string" },
         "attachmentLabel": { "type": "string" },
         "attachmentUri": { "type": "string" },
-        "messageType": { "type": "string", "enum": ["TEXT", "GEO_PIN", "PHOTO", "SYSTEM"] },
+        "attachmentSnippet": { "type": "string" },
+        "attachmentData": { "type": "string" },
+        "messageType": { "type": "string", "enum": ["TEXT", "GEO_PIN", "PHOTO", "DOC_LINK", "SYSTEM"] },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
       },
@@ -121,6 +126,10 @@
         "lng": { "type": "number" },
         "mapX": { "type": "number" },
         "mapY": { "type": "number" },
+        "linkedDocId": { "type": "string" },
+        "linkedDocTitle": { "type": "string" },
+        "linkedDocUri": { "type": "string" },
+        "linkedDocSnippet": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
       },
@@ -171,6 +180,29 @@
         "accuracyMeters",
         "updatedAt"
       ]
+    },
+    "DocRevision": {
+      "title": "DocRevision",
+      "description": "Immutable revision snapshot of a channel collaborative bitacora for conflict recovery and audit.",
+      "type": "object",
+      "properties": {
+        "channelId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "revisionNumber": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": [
+        "channelId",
+        "authorId",
+        "authorName",
+        "title",
+        "body",
+        "revisionNumber",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -197,6 +229,10 @@
     "/channels/{channelId}/presence/{userId}": {
       "schema": { "$ref": "#/entities/ChannelPresence" },
       "description": "Opt-in live location pins for channel members."
+    },
+    "/channels/{channelId}/doc_revisions/{revisionId}": {
+      "schema": { "$ref": "#/entities/DocRevision" },
+      "description": "Immutable bitacora revision history per channel."
     }
   }
 }
